@@ -24,6 +24,7 @@ This section manages the LLM providers that power GhidrAssist.
 
 - **Add**: Create a new provider configuration
 - **Edit**: Modify the selected provider
+- **Duplicate**: Duplicate the selected provider
 - **Delete**: Remove the selected provider
 - **Test**: Verify the selected provider
 
@@ -88,6 +89,7 @@ Configure Model Context Protocol (MCP) servers that provide tools.
 
 - **Add Server**: Configure a new MCP server
 - **Edit**: Modify selected server
+- **Duplicate**: Duplicate the selected server
 - **Remove**: Delete selected server
 - **Test Connection**: Verify connectivity
 

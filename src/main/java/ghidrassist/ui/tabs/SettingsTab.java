@@ -248,16 +248,19 @@ public class SettingsTab extends JPanel {
         JPanel buttonPanel = new JPanel(new FlowLayout(FlowLayout.LEFT));
         JButton addButton = new JButton("Add");
         JButton editButton = new JButton("Edit");
+        JButton duplicateButton = new JButton("Duplicate");
         JButton deleteButton = new JButton("Delete");
         llmTestButton = new JButton("Test");
 
         addButton.addActionListener(e -> onAddProvider());
         editButton.addActionListener(e -> onEditProvider());
+        duplicateButton.addActionListener(e -> onDuplicateProvider());
         deleteButton.addActionListener(e -> onDeleteProvider());
         llmTestButton.addActionListener(e -> onTestProvider());
 
         buttonPanel.add(addButton);
         buttonPanel.add(editButton);
+        buttonPanel.add(duplicateButton);
         buttonPanel.add(deleteButton);
         buttonPanel.add(llmTestButton);
         buttonPanel.add(llmTestStatusLabel);
@@ -292,6 +295,7 @@ public class SettingsTab extends JPanel {
         JPanel buttonPanel = new JPanel(new FlowLayout(FlowLayout.LEFT));
         JButton addButton = new JButton("Add Server");
         JButton editButton = new JButton("Edit");
+        JButton duplicateButton = new JButton("Duplicate");
         JButton removeButton = new JButton("Remove");
         mcpTestButton = new JButton("Test Connection");
 
@@ -300,11 +304,13 @@ public class SettingsTab extends JPanel {
             int row = mcpServersTable.getSelectedRow();
             if (row >= 0) showMCPAddEditDialog(mcpTableModel.getServerAt(row));
         });
+        duplicateButton.addActionListener(e -> onDuplicateMCPServer());
         removeButton.addActionListener(e -> onRemoveMCPServer());
         mcpTestButton.addActionListener(e -> onTestMCPServer());
 
         buttonPanel.add(addButton);
         buttonPanel.add(editButton);
+        buttonPanel.add(duplicateButton);
         buttonPanel.add(removeButton);
         buttonPanel.add(mcpTestButton);
         buttonPanel.add(mcpTestStatusLabel);
@@ -598,6 +604,27 @@ public class SettingsTab extends JPanel {
 
             activeProviderComboBox.removeItemAt(selectedRow);
             activeProviderComboBox.insertItemAt(provider.getName(), selectedRow);
+            saveProviders();
+        }
+    }
+
+    private void onDuplicateProvider() {
+        int row = llmTable.getSelectedRow();
+        if (row < 0) {
+            JOptionPane.showMessageDialog(this, "Please select a provider to duplicate.", "No Selection", JOptionPane.WARNING_MESSAGE);
+        } else {
+            APIProviderConfig provider = apiProviders.get(row).copy();
+            provider.setName(provider.getName() + " - Copy");
+            apiProviders.add(provider);
+            llmTableModel.addRow(new Object[] {
+                    provider.getName(),
+                    provider.getModel(),
+                    provider.getMaxTokens(),
+                    provider.getUrl(),
+                    maskApiKey(provider.getKey()),
+                    provider.isDisableTlsVerification()
+            });
+            activeProviderComboBox.addItem(provider.getName());
             saveProviders();
         }
     }
@@ -987,6 +1014,18 @@ public class SettingsTab extends JPanel {
                 MCPServerRegistry.getInstance().removeServer(existingServer.getName());
             }
             MCPServerRegistry.getInstance().addServer(config);
+            mcpTableModel.refresh();
+        }
+    }
+
+    private void onDuplicateMCPServer() {
+        int row = mcpServersTable.getSelectedRow();
+        if (row < 0) {
+            JOptionPane.showMessageDialog(this, "Please select a server to duplicate.", "No Selection", JOptionPane.WARNING_MESSAGE);
+        } else {
+            MCPServerConfig server = mcpTableModel.getServerAt(row).copy();
+            server.setName(server.getName() + "-copy");
+            MCPServerRegistry.getInstance().addServer(server);
             mcpTableModel.refresh();
         }
     }

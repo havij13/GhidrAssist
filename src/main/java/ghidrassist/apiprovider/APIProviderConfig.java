@@ -78,6 +78,14 @@ public class APIProviderConfig {
             throw new IllegalArgumentException("Failed to create provider: " + e.getMessage(), e);
         }
     }
+
+    /**
+     * Create a copy of this provider
+     * @return new provider instance with identical configuration
+     */
+    public APIProviderConfig copy() {
+        return new APIProviderConfig(name, type, model, maxTokens, url, key, disableTlsVerification, timeout);
+    }
     
     /**
      * Check if this provider type is supported
