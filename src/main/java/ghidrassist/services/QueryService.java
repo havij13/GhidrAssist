@@ -233,6 +233,13 @@ public class QueryService {
         ghidra.program.model.address.Address currentAddress = plugin.getCurrentAddress();
         if (currentProgram != null) {
             toolRegistry.setFullContext(currentProgram, currentAddress);
+        } else {
+            // No active binary context: fall back to plain chat mode.
+            // Native tools depend on program/address and can cause incomplete
+            // tool-calling loops when no program is loaded.
+            ghidra.util.Msg.info(this, "No program context - using regular query mode (native tools disabled)");
+            executeRegularQuery(request, llmApi, handler);
+            return;
         }
 
         // Get native tools only (MCP tools won't be registered since MCP is disabled)

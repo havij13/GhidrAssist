@@ -305,7 +305,7 @@ public class QueryTab extends JPanel {
      * Preserves scroll position if user has scrolled up from bottom.
      */
     public void setResponseText(String htmlText) {
-        SwingUtilities.invokeLater(() -> {
+        Runnable updateUi = () -> {
             try {
                 // Capture scroll state BEFORE any modifications
                 boolean wasAtBottom = scrollManager.isAtBottom();
@@ -313,6 +313,7 @@ public class QueryTab extends JPanel {
 
                 // Switch to HTML mode for final markdown rendering
                 responseTextPane.setContentType("text/html");
+                responseTextPane.setEditorKit(new HTMLEditorKit());
                 responseTextPane.setText(htmlText);
 
                 // Restore scroll position - only auto-scroll if user was at bottom
@@ -326,7 +327,13 @@ public class QueryTab extends JPanel {
             } catch (Exception e) {
                 Msg.error(this, "Error setting response text", e);
             }
-        });
+        };
+
+        if (SwingUtilities.isEventDispatchThread()) {
+            updateUi.run();
+        } else {
+            SwingUtilities.invokeLater(updateUi);
+        }
     }
 
     /**
@@ -336,7 +343,7 @@ public class QueryTab extends JPanel {
      * @param prefixHtml Pre-rendered HTML for conversation history (may be empty)
      */
     public void initializeForStreaming(String prefixHtml) {
-        SwingUtilities.invokeLater(() -> {
+        Runnable initializeUi = () -> {
             // Capture scroll state BEFORE any modifications
             boolean wasAtBottom = scrollManager.isAtBottom();
             int savedScrollValue = scrollManager.getScrollPane().getVerticalScrollBar().getValue();
@@ -370,7 +377,13 @@ public class QueryTab extends JPanel {
                 SwingUtilities.invokeLater(() ->
                         scrollManager.getScrollPane().getVerticalScrollBar().setValue(savedScrollValue));
             }
-        });
+        };
+
+        if (SwingUtilities.isEventDispatchThread()) {
+            initializeUi.run();
+        } else {
+            SwingUtilities.invokeLater(initializeUi);
+        }
     }
 
     /**
@@ -422,7 +435,12 @@ public class QueryTab extends JPanel {
             return;
         }
 
-        HTMLDocument doc = (HTMLDocument) responseTextPane.getDocument();
+        HTMLDocument doc = ensureHtmlDocument();
+        if (doc == null) {
+            documentCorrupted = true;
+            rebuildDocument();
+            return;
+        }
 
         try {
             // Append committed HTML
@@ -454,6 +472,8 @@ public class QueryTab extends JPanel {
         if (fullHtml != null) {
             String wrapped = "<html><head><style>" + STREAMING_CSS + "</style></head><body>" +
                     fullHtml + "</body></html>";
+            responseTextPane.setContentType("text/html");
+            responseTextPane.setEditorKit(new HTMLEditorKit());
             responseTextPane.setText(wrapped);
             documentCorrupted = false;
         }
@@ -464,7 +484,40 @@ public class QueryTab extends JPanel {
                 accumulatedCommittedHtml.toString() +
                 lastPendingHtml +
                 "</body></html>";
+        responseTextPane.setContentType("text/html");
+        responseTextPane.setEditorKit(new HTMLEditorKit());
         responseTextPane.setText(html);
+    }
+
+    /**
+     * Ensure the response pane has an HTMLDocument.
+     * When streaming starts before HTML initialization finishes, Swing may still
+     * expose a DefaultStyledDocument. Recover by rebuilding the HTML document.
+     */
+    private HTMLDocument ensureHtmlDocument() {
+        Document currentDoc = responseTextPane.getDocument();
+        if (currentDoc instanceof HTMLDocument) {
+            return (HTMLDocument) currentDoc;
+        }
+
+        Msg.warn(this, "Query response document is not HTMLDocument (" +
+                currentDoc.getClass().getName() + "); rebuilding HTML view.");
+
+        responseTextPane.setContentType("text/html");
+        responseTextPane.setEditorKit(new HTMLEditorKit());
+        String repairedHtml = "<html><head><style>" + STREAMING_CSS + "</style></head><body>" +
+                "<div id=\"committed\">" + accumulatedCommittedHtml + "</div>" +
+                "<div id=\"pending\">" + lastPendingHtml + "</div>" +
+                "</body></html>";
+        responseTextPane.setText(repairedHtml);
+
+        Document repairedDoc = responseTextPane.getDocument();
+        if (repairedDoc instanceof HTMLDocument) {
+            return (HTMLDocument) repairedDoc;
+        }
+
+        Msg.error(this, "Failed to recover HTMLDocument for query streaming", null);
+        return null;
     }
 
     private Element findElement(HTMLDocument doc, String id) {
