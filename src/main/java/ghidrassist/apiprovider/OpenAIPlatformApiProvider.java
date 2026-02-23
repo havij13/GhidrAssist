@@ -833,16 +833,16 @@ public class OpenAIPlatformApiProvider extends APIProvider implements FunctionCa
 
                                                         ToolCallAccumulator acc = toolCallsMap.computeIfAbsent(index, k -> new ToolCallAccumulator());
 
-                                                        if (toolCallDelta.has("id")) {
+                                                        if (toolCallDelta.has("id") && !toolCallDelta.get("id").isJsonNull()) {
                                                             acc.id = toolCallDelta.get("id").getAsString();
                                                         }
 
                                                         if (toolCallDelta.has("function")) {
                                                             JsonObject functionDelta = toolCallDelta.getAsJsonObject("function");
-                                                            if (functionDelta.has("name")) {
+                                                            if (functionDelta.has("name") && !functionDelta.get("name").isJsonNull()) {
                                                                 acc.name = functionDelta.get("name").getAsString();
                                                             }
-                                                            if (functionDelta.has("arguments")) {
+                                                            if (functionDelta.has("arguments") && !functionDelta.get("arguments").isJsonNull()) {
                                                                 acc.argumentsBuffer.append(functionDelta.get("arguments").getAsString());
                                                             }
                                                         }
