@@ -38,7 +38,21 @@ public class LMStudioProvider extends APIProvider implements FunctionCallingProv
                 .connectTimeout(super.timeout)
                 .readTimeout(super.timeout)
                 .writeTimeout(super.timeout)
-                .retryOnConnectionFailure(true);
+                .retryOnConnectionFailure(true)
+                .addInterceptor(chain -> {
+                    Request originalRequest = chain.request();
+                    Request.Builder requestBuilder = originalRequest.newBuilder()
+                        .header("Content-Type", "application/json");
+
+                    String apiKey = key != null ? key.trim() : "";
+                    if (!apiKey.isEmpty()) {
+                        // Support API-key-protected OpenAI-compatible local endpoints.
+                        // LM Studio itself may not require this, but remote/proxied servers often do.
+                        requestBuilder.header("Authorization", "Bearer " + apiKey);
+                    }
+
+                    return chain.proceed(requestBuilder.build());
+                });
 
             if (disableTlsVerification) {
                 TrustManager[] trustAllCerts = new TrustManager[]{

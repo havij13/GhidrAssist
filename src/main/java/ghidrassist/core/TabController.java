@@ -1196,6 +1196,16 @@ public class TabController {
     public void handleHyperlinkEvent(HyperlinkEvent e) {
         if (e.getEventType() == HyperlinkEvent.EventType.ACTIVATED) {
             String desc = e.getDescription();
+
+            // Feedback links can appear when viewing old chat content.
+            // In that case there may be no in-memory "latest interaction" cached yet.
+            if (("thumbsup".equals(desc) || "thumbsdown".equals(desc))
+                    && !feedbackService.hasPendingFeedback()) {
+                Msg.showInfo(getClass(), null, "Feedback",
+                    "No recent response is cached for feedback yet. Run a new query first.");
+                return;
+            }
+
             try {
                 if (desc.equals("thumbsup")) {
                     feedbackService.storePositiveFeedback();
@@ -1204,6 +1214,8 @@ public class TabController {
                     feedbackService.storeNegativeFeedback();
                     Msg.showInfo(getClass(), null, "Feedback", "Thank you for your feedback!");
                 }
+            } catch (IllegalStateException ex) {
+                Msg.showInfo(getClass(), null, "Feedback", ex.getMessage());
             } catch (Exception ex) {
                 Msg.showError(this, null, "Error", "Failed to store feedback: " + ex.getMessage());
             }
