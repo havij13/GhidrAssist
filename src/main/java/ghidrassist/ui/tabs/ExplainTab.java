@@ -46,6 +46,7 @@ public class ExplainTab extends JPanel {
     private JEditorPane lineExplanationTextPane;
     private String lineExplanationMarkdown = "";
     private JSplitPane mainSplitPane;
+    private JSplitPane outerSplitPane;
     private JButton lineExplanationCloseButton;
 
     // Streaming markdown rendering CSS (same as QueryTab)
@@ -133,10 +134,11 @@ public class ExplainTab extends JPanel {
         topRow.add(activityProfileLabel);
         securityInfoPanel.add(topRow);
 
-        // Security flags row
-        JPanel flagsRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 10, 2));
-        securityFlagsLabel = new JLabel("Flags: None");
-        flagsRow.add(securityFlagsLabel);
+        // Security flags row (BorderLayout so the label fills width and HTML wraps)
+        JPanel flagsRow = new JPanel(new BorderLayout());
+        flagsRow.setBorder(BorderFactory.createEmptyBorder(2, 10, 2, 10));
+        securityFlagsLabel = new JLabel("<html>Flags: None</html>");
+        flagsRow.add(securityFlagsLabel, BorderLayout.CENTER);
         securityInfoPanel.add(flagsRow);
 
         // API lists in a horizontal panel
@@ -236,23 +238,23 @@ public class ExplainTab extends JPanel {
         mainSplitPane.setDividerSize(0);
         mainSplitPane.setBottomComponent(null);
 
-        add(mainSplitPane, BorderLayout.CENTER);
+        // Outer split pane: mainSplitPane (top) / securityInfoPanel (bottom)
+        outerSplitPane = new JSplitPane(JSplitPane.VERTICAL_SPLIT);
+        outerSplitPane.setTopComponent(mainSplitPane);
+        outerSplitPane.setBottomComponent(securityInfoPanel);
+        outerSplitPane.setResizeWeight(1.0); // Main content gets extra space
+        outerSplitPane.setOneTouchExpandable(true);
+        outerSplitPane.setContinuousLayout(true);
 
-        // Bottom panel containing security info + buttons
-        JPanel bottomPanel = new JPanel();
-        bottomPanel.setLayout(new BoxLayout(bottomPanel, BoxLayout.Y_AXIS));
+        add(outerSplitPane, BorderLayout.CENTER);
 
-        // Security info panel
-        bottomPanel.add(securityInfoPanel);
-
-        // Button panel
+        // Button panel directly in SOUTH (no wrapper)
         JPanel buttonPanel = new JPanel();
         buttonPanel.add(explainFunctionButton);
         buttonPanel.add(explainLineButton);
         buttonPanel.add(clearExplainButton);
-        bottomPanel.add(buttonPanel);
 
-        add(bottomPanel, BorderLayout.SOUTH);
+        add(buttonPanel, BorderLayout.SOUTH);
     }
 
     private void setupListeners() {
@@ -491,9 +493,9 @@ public class ExplainTab extends JPanel {
 
         // Update security flags
         if (securityFlags != null && !securityFlags.isEmpty()) {
-            securityFlagsLabel.setText("Flags: " + String.join(", ", securityFlags));
+            securityFlagsLabel.setText("<html>Flags: " + String.join(", ", securityFlags) + "</html>");
         } else {
-            securityFlagsLabel.setText("Flags: None");
+            securityFlagsLabel.setText("<html>Flags: None</html>");
         }
 
         // Update network APIs
@@ -517,6 +519,16 @@ public class ExplainTab extends JPanel {
                          (networkAPIs != null && !networkAPIs.isEmpty()) ||
                          (fileIOAPIs != null && !fileIOAPIs.isEmpty());
         securityInfoPanel.setVisible(hasData);
+
+        // Set a reasonable initial divider location if the panel just appeared
+        if (hasData && outerSplitPane != null) {
+            SwingUtilities.invokeLater(() -> {
+                int totalHeight = outerSplitPane.getHeight();
+                if (totalHeight > 0 && outerSplitPane.getDividerLocation() >= totalHeight - 20) {
+                    outerSplitPane.setDividerLocation(totalHeight - 160);
+                }
+            });
+        }
     }
 
     /**
@@ -526,7 +538,7 @@ public class ExplainTab extends JPanel {
         riskLevelLabel.setText("Risk: —");
         riskLevelLabel.setForeground(UIManager.getColor("Label.foreground"));
         activityProfileLabel.setText("Activity: —");
-        securityFlagsLabel.setText("Flags: None");
+        securityFlagsLabel.setText("<html>Flags: None</html>");
         networkAPIsTextArea.setText("");
         fileIOAPIsTextArea.setText("");
         securityInfoPanel.setVisible(false);
