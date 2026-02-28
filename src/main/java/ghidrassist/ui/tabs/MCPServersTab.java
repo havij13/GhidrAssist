@@ -4,6 +4,8 @@ import java.awt.*;
 import java.awt.event.ActionEvent;
 import java.awt.event.ActionListener;
 import java.util.List;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import javax.swing.*;
 import javax.swing.table.AbstractTableModel;
 import javax.swing.table.DefaultTableCellRenderer;
@@ -21,6 +23,7 @@ public class MCPServersTab extends JPanel {
     private JButton editButton;
     private JButton removeButton;
     private JButton testButton;
+    private SwingWorker<Boolean, Void> activeTestWorker;
     
     public MCPServersTab() {
         this.registry = MCPServerRegistry.getInstance();
@@ -146,55 +149,64 @@ public class MCPServersTab extends JPanel {
     }
     
     private void testConnection() {
+        // If cancel clicked during test
+        if (activeTestWorker != null && !activeTestWorker.isDone()) {
+            activeTestWorker.cancel(true);
+            testButton.setText("Test Connection");
+            activeTestWorker = null;
+            return;
+        }
+
         int selectedRow = serversTable.getSelectedRow();
         if (selectedRow < 0) return;
-        
+
         MCPServerConfig server = tableModel.getServerAt(selectedRow);
-        testButton.setEnabled(false);
-        testButton.setText("Testing...");
-        
+        testButton.setText("Cancel");
+
         SwingWorker<Boolean, Void> worker = new SwingWorker<Boolean, Void>() {
             private String errorMessage = "";
-            
+
             @Override
             protected Boolean doInBackground() throws Exception {
                 try {
-                    // Create client adapter for testing using official SDK
-                    ghidrassist.mcp2.protocol.MCPClientAdapter client = 
+                    ghidrassist.mcp2.protocol.MCPClientAdapter client =
                         new ghidrassist.mcp2.protocol.MCPClientAdapter(server);
-                    
-                    // Try to connect (this will test both connectivity and MCP protocol)
-                    client.connect().get(); // Wait for connection
-                    
-                    // If we get here, both basic connectivity and MCP protocol tests passed
+
+                    client.connect().get(15, TimeUnit.SECONDS);
+
                     client.disconnect();
                     return true;
-                    
+
+                } catch (TimeoutException e) {
+                    errorMessage = "Test timed out after 15 seconds";
+                    return false;
                 } catch (Exception e) {
-                    // Extract the root cause message
                     Throwable cause = e.getCause() != null ? e.getCause() : e;
                     errorMessage = cause.getMessage();
                     return false;
                 }
             }
-            
+
             @Override
             protected void done() {
+                testButton.setText("Test Connection");
+                activeTestWorker = null;
                 try {
+                    if (isCancelled()) return;
                     boolean success = get();
                     String message;
                     int messageType;
-                    
+
                     if (success) {
-                        message = "✅ Connection successful!\n\n" +
+                        message = "Connection successful!\n\n" +
                                  "Server is responding and supports MCP protocol.";
                         messageType = JOptionPane.INFORMATION_MESSAGE;
                     } else {
-                        message = "❌ Connection failed:\n\n" + 
+                        message = "Connection failed:\n\n" +
                             (errorMessage.isEmpty() ? "Unknown error occurred" : errorMessage);
                         messageType = JOptionPane.ERROR_MESSAGE;
                     }
-                    
+
                     JOptionPane.showMessageDialog(
                         MCPServersTab.this,
                         message,
@@ -204,16 +216,14 @@ public class MCPServersTab extends JPanel {
                 } catch (Exception e) {
                     JOptionPane.showMessageDialog(
                         MCPServersTab.this,
-                        "❌ Test failed: " + e.getMessage(),
+                        "Test failed: " + e.getMessage(),
                         "Connection Test Error",
                         JOptionPane.ERROR_MESSAGE
                     );
-                } finally {
-                    testButton.setEnabled(true);
-                    testButton.setText("Test Connection");
                 }
             }
         };
+        activeTestWorker = worker;
         worker.execute();
     }
     

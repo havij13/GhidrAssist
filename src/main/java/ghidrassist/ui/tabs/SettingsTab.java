@@ -27,6 +27,10 @@ import ghidrassist.apiprovider.oauth.OAuthTokenManager;
 import ghidrassist.apiprovider.oauth.OpenAIOAuthTokenManager;
 import ghidrassist.apiprovider.oauth.GeminiOAuthTokenManager;
 
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
+
 /**
  * Unified Settings tab matching BinAssist's layout.
  * Contains all settings in scrollable grouped sections:
@@ -39,7 +43,7 @@ import ghidrassist.apiprovider.oauth.GeminiOAuthTokenManager;
  */
 public class SettingsTab extends JPanel {
     private static final long serialVersionUID = 1L;
-    private static final String VERSION = "1.17.0";
+    private static final String VERSION = "1.18.0";
     private static final String[] REASONING_EFFORT_OPTIONS = {"None", "Low", "Medium", "High"};
 
     private final TabController controller;
@@ -86,6 +90,11 @@ public class SettingsTab extends JPanel {
     private JLabel mcpTestStatusLabel;
     private ImageIcon successIcon;
     private ImageIcon failureIcon;
+
+    // Active test workers for cancel support
+    private SwingWorker<Boolean, Void> activeLlmTestWorker;
+    private SwingWorker<Boolean, Void> activeMcpTestWorker;
+    private SwingWorker<Boolean, Void> activeSymGraphTestWorker;
 
     public SettingsTab(TabController controller) {
         super(new BorderLayout());
@@ -650,6 +659,17 @@ public class SettingsTab extends JPanel {
     }
 
     private void onTestProvider() {
+        // If cancel clicked during test
+        if (activeLlmTestWorker != null && !activeLlmTestWorker.isDone()) {
+            activeLlmTestWorker.cancel(true);
+            llmTestButton.setText("Test");
+            llmTestStatusLabel.setText("");
+            llmTestStatusLabel.setIcon(failureIcon);
+            llmTestStatusLabel.setToolTipText("Test cancelled by user");
+            activeLlmTestWorker = null;
+            return;
+        }
+
         int selectedRow = llmTable.getSelectedRow();
         if (selectedRow < 0) {
             llmTestStatusLabel.setIcon(failureIcon);
@@ -660,8 +680,8 @@ public class SettingsTab extends JPanel {
 
         final APIProviderConfig testProvider = apiProviders.get(selectedRow);
 
-        // Show testing state
-        llmTestButton.setEnabled(false);
+        // Show testing state with Cancel button
+        llmTestButton.setText("Cancel");
         llmTestStatusLabel.setIcon(null);
         llmTestStatusLabel.setText("...");
         llmTestStatusLabel.setToolTipText("Testing connection...");
@@ -674,8 +694,8 @@ public class SettingsTab extends JPanel {
                 try {
                     LlmApi testApi = new LlmApi(testProvider, plugin);
                     String testPrompt = "Testing connection. Please respond with 'OK' and nothing else.";
-                    final boolean[] success = {false};
 
+                    CompletableFuture<Boolean> future = new CompletableFuture<>();
                     testApi.sendRequestAsync(testPrompt, new LlmApi.LlmResponseHandler() {
                         @Override
                         public void onStart() {}
@@ -683,17 +703,19 @@ public class SettingsTab extends JPanel {
                         public void onUpdate(String partialResponse) {}
                         @Override
                         public void onComplete(String fullResponse) {
-                            success[0] = true;
+                            future.complete(true);
                         }
                         @Override
                         public void onError(Throwable error) {
                             errorMessage = error.getMessage();
+                            future.complete(false);
                         }
                     });
 
-                    // Wait briefly for async response
-                    Thread.sleep(5000);
-                    return success[0];
+                    return future.get(15, TimeUnit.SECONDS);
+                } catch (TimeoutException e) {
+                    errorMessage = "Test timed out after 15 seconds";
+                    return false;
                 } catch (Exception e) {
                     errorMessage = e.getMessage();
                     return false;
@@ -702,9 +724,11 @@ public class SettingsTab extends JPanel {
 
             @Override
             protected void done() {
-                llmTestButton.setEnabled(true);
+                llmTestButton.setText("Test");
+                activeLlmTestWorker = null;
                 llmTestStatusLabel.setText("");
                 try {
+                    if (isCancelled()) return;
                     if (get()) {
                         llmTestStatusLabel.setIcon(successIcon);
                         llmTestStatusLabel.setToolTipText("Connection successful");
@@ -718,6 +742,7 @@ public class SettingsTab extends JPanel {
                 }
             }
         };
+        activeLlmTestWorker = worker;
         worker.execute();
     }
 
@@ -1045,6 +1070,17 @@ public class SettingsTab extends JPanel {
     }
 
     private void onTestMCPServer() {
+        // If cancel clicked during test
+        if (activeMcpTestWorker != null && !activeMcpTestWorker.isDone()) {
+            activeMcpTestWorker.cancel(true);
+            mcpTestButton.setText("Test Connection");
+            mcpTestStatusLabel.setText("");
+            mcpTestStatusLabel.setIcon(failureIcon);
+            mcpTestStatusLabel.setToolTipText("Test cancelled by user");
+            activeMcpTestWorker = null;
+            return;
+        }
+
         int selectedRow = mcpServersTable.getSelectedRow();
         if (selectedRow < 0) {
             mcpTestStatusLabel.setIcon(failureIcon);
@@ -1054,8 +1090,8 @@ public class SettingsTab extends JPanel {
 
         MCPServerConfig server = mcpTableModel.getServerAt(selectedRow);
 
-        // Show testing state
-        mcpTestButton.setEnabled(false);
+        // Show testing state with Cancel button
+        mcpTestButton.setText("Cancel");
         mcpTestStatusLabel.setIcon(null);
         mcpTestStatusLabel.setText("...");
         mcpTestStatusLabel.setToolTipText("Testing connection to " + server.getName() + "...");
@@ -1068,9 +1104,12 @@ public class SettingsTab extends JPanel {
                 try {
                     ghidrassist.mcp2.protocol.MCPClientAdapter client =
                         new ghidrassist.mcp2.protocol.MCPClientAdapter(server);
-                    client.connect().get();
+                    client.connect().get(15, TimeUnit.SECONDS);
                     client.disconnect();
                     return true;
+                } catch (TimeoutException e) {
+                    errorMessage = "Test timed out after 15 seconds";
+                    return false;
                 } catch (Exception e) {
                     Throwable cause = e.getCause() != null ? e.getCause() : e;
                     errorMessage = cause.getMessage();
@@ -1080,9 +1119,11 @@ public class SettingsTab extends JPanel {
 
             @Override
             protected void done() {
-                mcpTestButton.setEnabled(true);
+                mcpTestButton.setText("Test Connection");
+                activeMcpTestWorker = null;
                 mcpTestStatusLabel.setText("");
                 try {
+                    if (isCancelled()) return;
                     if (get()) {
                         mcpTestStatusLabel.setIcon(successIcon);
                         mcpTestStatusLabel.setToolTipText("Connection successful");
@@ -1096,17 +1137,29 @@ public class SettingsTab extends JPanel {
                 }
             }
         };
+        activeMcpTestWorker = worker;
         worker.execute();
     }
 
     private void onTestSymGraph() {
+        // If cancel clicked during test
+        if (activeSymGraphTestWorker != null && !activeSymGraphTestWorker.isDone()) {
+            activeSymGraphTestWorker.cancel(true);
+            symGraphTestButton.setText("Test");
+            symGraphTestStatusLabel.setText("");
+            symGraphTestStatusLabel.setIcon(failureIcon);
+            symGraphTestStatusLabel.setToolTipText("Test cancelled by user");
+            activeSymGraphTestWorker = null;
+            return;
+        }
+
         // Save current field values to preferences before testing
         Preferences.setProperty("GhidrAssist.SymGraphAPIUrl", symGraphUrlField.getText().trim());
         Preferences.setProperty("GhidrAssist.SymGraphAPIKey", new String(symGraphKeyField.getPassword()));
         Preferences.store();
 
-        // Show testing state
-        symGraphTestButton.setEnabled(false);
+        // Show testing state with Cancel button
+        symGraphTestButton.setText("Cancel");
         symGraphTestStatusLabel.setIcon(null);
         symGraphTestStatusLabel.setText("...");
         symGraphTestStatusLabel.setToolTipText("Testing SymGraph API connection...");
@@ -1118,27 +1171,34 @@ public class SettingsTab extends JPanel {
             @Override
             protected Boolean doInBackground() {
                 try {
-                    SymGraphService service = new SymGraphService();
-
-                    // Test basic connectivity by checking if a known test hash exists
-                    // This tests the API URL is reachable without requiring authentication
-                    String testHash = "0000000000000000000000000000000000000000000000000000000000000000";
-                    service.checkBinaryExists(testHash);
-
-                    // If we have an API key, test authentication by trying to get symbols
-                    if (service.hasApiKey()) {
+                    return CompletableFuture.supplyAsync(() -> {
                         try {
-                            service.getSymbols(testHash);
-                            successMessage = "API reachable, authentication successful";
-                        } catch (SymGraphService.SymGraphAuthException e) {
-                            errorMessage = "API reachable but authentication failed: " + e.getMessage();
+                            SymGraphService service = new SymGraphService();
+
+                            String testHash = "0000000000000000000000000000000000000000000000000000000000000000";
+                            service.checkBinaryExists(testHash);
+
+                            if (service.hasApiKey()) {
+                                try {
+                                    service.getSymbols(testHash);
+                                    successMessage = "API reachable, authentication successful";
+                                } catch (SymGraphService.SymGraphAuthException e) {
+                                    errorMessage = "API reachable but authentication failed: " + e.getMessage();
+                                    return false;
+                                }
+                            } else {
+                                successMessage = "API reachable (no API key configured)";
+                            }
+
+                            return true;
+                        } catch (Exception e) {
+                            errorMessage = e.getMessage();
                             return false;
                         }
-                    } else {
-                        successMessage = "API reachable (no API key configured)";
-                    }
-
-                    return true;
+                    }).get(15, TimeUnit.SECONDS);
+                } catch (TimeoutException e) {
+                    errorMessage = "Test timed out after 15 seconds";
+                    return false;
                 } catch (Exception e) {
                     errorMessage = e.getMessage();
                     return false;
@@ -1147,9 +1207,11 @@ public class SettingsTab extends JPanel {
 
             @Override
             protected void done() {
-                symGraphTestButton.setEnabled(true);
+                symGraphTestButton.setText("Test");
+                activeSymGraphTestWorker = null;
                 symGraphTestStatusLabel.setText("");
                 try {
+                    if (isCancelled()) return;
                     if (get()) {
                         symGraphTestStatusLabel.setIcon(successIcon);
                         symGraphTestStatusLabel.setToolTipText(successMessage);
@@ -1163,6 +1225,7 @@ public class SettingsTab extends JPanel {
                 }
             }
         };
+        activeSymGraphTestWorker = worker;
         worker.execute();
     }
 

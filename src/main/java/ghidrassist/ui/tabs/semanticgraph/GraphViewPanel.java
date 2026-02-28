@@ -168,6 +168,9 @@ public class GraphViewPanel extends JPanel {
             super.paintComponent(g);
             Graphics2D g2 = (Graphics2D) g.create();
 
+            // Clip to component bounds to prevent painting outside during partial repaints
+            g2.clipRect(0, 0, getWidth(), getHeight());
+
             // Anti-aliasing
             g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
             g2.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_ON);
@@ -177,11 +180,9 @@ public class GraphViewPanel extends JPanel {
             g2.setColor(BG_COLOR);
             g2.fillRect(0, 0, getWidth(), getHeight());
 
-            // Apply transform: translate center of panel, then user translate, then scale
-            AffineTransform at = new AffineTransform();
-            at.translate(getWidth() / 2.0 + translateX, getHeight() / 2.0 + translateY);
-            at.scale(scale, scale);
-            g2.setTransform(at);
+            // Apply transform relative to Swing's base transform (never use setTransform)
+            g2.translate(getWidth() / 2.0 + translateX, getHeight() / 2.0 + translateY);
+            g2.scale(scale, scale);
 
             // Draw edges (z-order: behind nodes)
             for (EdgePath ep : edgePaths) {
