@@ -73,8 +73,6 @@ dependencies {
 	// JGraphT - Graph algorithms for Graph-RAG (community detection, traversal)
 	implementation 'org.jgrapht:jgrapht-core:1.5.2'
 
-	// JGraphX - Visual graph rendering for Semantic Graph tab
-	implementation 'com.github.vlsi.mxgraph:jgraphx:4.2.2'
 }
 
 // Exclude additional files from the built extension
