@@ -316,11 +316,12 @@ public class SemanticQueryTools {
         // 15. ga.create_edge
         tools.add(createTool(
                 TOOL_PREFIX + "create_edge",
-                "Create a semantic relationship edge between two functions based on your analysis. " +
+                "Create a relationship edge between two functions based on your analysis. " +
                 "Use this to record relationships you discover during code review that aren't captured " +
-                "by the structural call graph. Edge types: SIMILAR_PURPOSE (functions with similar behavior), " +
-                "RELATED_TO (general semantic relationship), DEPENDS_ON (functional dependency), " +
-                "IMPLEMENTS (implements a concept like 'authentication' or 'encryption'). " +
+                "by the structural call graph. Allowed edge types — Semantic: SIMILAR_PURPOSE, RELATED_TO, " +
+                "DEPENDS_ON, IMPLEMENTS; Security: VULNERABLE_VIA, TAINT_FLOWS_TO, CALLS_VULNERABLE, " +
+                "NETWORK_SEND, NETWORK_RECV; Community: BELONGS_TO_COMMUNITY, SIBLING. " +
+                "Structural types (CONTAINS, CALLS, FLOWS_TO, REFERENCES, INHERITS) are NOT allowed. " +
                 "Edges are persisted to the knowledge graph. NO LLM call.",
                 createSchema(
                         Map.of(
@@ -329,7 +330,9 @@ public class SemanticQueryTools {
                                 "target_address", Map.of("type", "string", "description", "Target function address (hex)"),
                                 "target_name", Map.of("type", "string", "description", "Target function name (alternative to address)"),
                                 "edge_type", Map.of("type", "string", "description",
-                                        "Edge type: SIMILAR_PURPOSE, RELATED_TO, DEPENDS_ON, IMPLEMENTS"),
+                                        "Edge type: SIMILAR_PURPOSE, RELATED_TO, DEPENDS_ON, IMPLEMENTS, " +
+                                        "VULNERABLE_VIA, TAINT_FLOWS_TO, CALLS_VULNERABLE, NETWORK_SEND, " +
+                                        "NETWORK_RECV, BELONGS_TO_COMMUNITY, SIBLING"),
                                 "confidence", Map.of("type", "number", "description", "Confidence score 0.0-1.0 (default: 0.8)"),
                                 "reason", Map.of("type", "string", "description", "Brief explanation of the relationship")
                         ),
@@ -1937,10 +1940,17 @@ public class SemanticQueryTools {
                 ". Valid types: SIMILAR_PURPOSE, RELATED_TO, DEPENDS_ON, IMPLEMENTS");
         }
 
-        // Validate that this is a semantic edge type (not structural)
-        if (!isSemanticEdgeType(edgeType)) {
-            return MCPToolResult.error("Edge type " + edgeTypeStr + " is not a semantic edge type. " +
-                "Use: SIMILAR_PURPOSE, RELATED_TO, DEPENDS_ON, IMPLEMENTS");
+        // Validate that this is not a structural edge type
+        if (!isLLMCreatableEdgeType(edgeType)) {
+            StringBuilder validTypes = new StringBuilder();
+            for (ghidrassist.graphrag.nodes.EdgeType et : ghidrassist.graphrag.nodes.EdgeType.values()) {
+                if (!et.isStructural()) {
+                    if (validTypes.length() > 0) validTypes.append(", ");
+                    validTypes.append(et.name());
+                }
+            }
+            return MCPToolResult.error("Edge type " + edgeTypeStr + " is a structural edge type and cannot be created by the LLM. " +
+                "Allowed types: " + validTypes.toString());
         }
 
         // Look up source function
@@ -2004,13 +2014,10 @@ public class SemanticQueryTools {
     }
 
     /**
-     * Check if an edge type is a semantic (LLM-creatable) edge type.
+     * Check if an edge type can be created by the LLM (any non-structural type).
      */
-    private boolean isSemanticEdgeType(ghidrassist.graphrag.nodes.EdgeType edgeType) {
-        return edgeType == ghidrassist.graphrag.nodes.EdgeType.SIMILAR_PURPOSE ||
-               edgeType == ghidrassist.graphrag.nodes.EdgeType.RELATED_TO ||
-               edgeType == ghidrassist.graphrag.nodes.EdgeType.DEPENDS_ON ||
-               edgeType == ghidrassist.graphrag.nodes.EdgeType.IMPLEMENTS;
+    private boolean isLLMCreatableEdgeType(ghidrassist.graphrag.nodes.EdgeType edgeType) {
+        return !edgeType.isStructural();
     }
 
     /**
