@@ -7,6 +7,7 @@ import ghidrassist.apiprovider.APIProviderConfig;
 import ghidrassist.mcp2.tools.MCPTool;
 import ghidrassist.mcp2.tools.MCPToolManager;
 import ghidrassist.tools.api.Tool;
+import ghidrassist.tools.native_.DocumentToolProvider;
 import ghidrassist.tools.native_.NativeToolManager;
 import ghidrassist.tools.registry.ToolRegistry;
 
@@ -50,6 +51,7 @@ public class ReActOrchestrator {
     private final MCPToolManager mcpToolManager;
     private final ToolRegistry toolRegistry;
     private final GhidrAssistPlugin plugin;
+    private NativeToolManager nativeToolManager;
 
     // Conversation history manager (optional - for persistence)
     private ConversationHistoryManager historyManager;
@@ -115,8 +117,8 @@ public class ReActOrchestrator {
         try {
             // Register native tools (semantic, actions)
             AnalysisDB analysisDB = new AnalysisDB();
-            NativeToolManager nativeManager = new NativeToolManager(analysisDB);
-            registry.registerProvider(nativeManager);
+            this.nativeToolManager = new NativeToolManager(analysisDB);
+            registry.registerProvider(nativeToolManager);
 
             // Register MCP tools
             registry.registerProvider(mcpToolManager);
@@ -134,6 +136,17 @@ public class ReActOrchestrator {
         }
 
         return registry;
+    }
+
+    /**
+     * Set the handler for document chat creation.
+     *
+     * @param handler The handler to use for creating document chats
+     */
+    public void setDocumentChatHandler(DocumentToolProvider.DocumentChatHandler handler) {
+        if (nativeToolManager != null) {
+            nativeToolManager.setDocumentChatHandler(handler);
+        }
     }
 
     /**

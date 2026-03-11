@@ -144,6 +144,16 @@ public class TabController {
         this.symGraphController = new SymGraphController(plugin, analysisDB);
         this.semanticGraphController = new SemanticGraphController(plugin, analysisDB);
 
+        // Register document chat handler for the add_document_to_chat tool
+        queryService.setDocumentChatHandler((title, content) -> {
+            int sessionId = queryService.createDocumentChat(title, content);
+            if (sessionId != -1) {
+                // Refresh chat history on the Swing EDT
+                javax.swing.SwingUtilities.invokeLater(this::refreshChatHistory);
+            }
+            return sessionId;
+        });
+
         new UIState();
     }
 
@@ -887,6 +897,15 @@ public class TabController {
                     8000,  // contextSummaryThreshold
                     maxToolRounds  // maxToolRounds per iteration
                 );
+
+            // Wire document chat handler so the agent can create report chats
+            currentOrchestrator.setDocumentChatHandler((title, content) -> {
+                int sessionId = queryService.createDocumentChat(title, content);
+                if (sessionId != -1) {
+                    javax.swing.SwingUtilities.invokeLater(() -> refreshChatHistory());
+                }
+                return sessionId;
+            });
 
             // Create progress handler for UI updates with todos and findings support
             ghidrassist.agent.react.ReActProgressHandler progressHandler =

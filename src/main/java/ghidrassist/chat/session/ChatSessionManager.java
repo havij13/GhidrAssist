@@ -81,6 +81,24 @@ public class ChatSessionManager {
     }
 
     /**
+     * Create a new chat session without making it current.
+     * Used for document chats that should appear in the sidebar
+     * without disrupting the active conversation.
+     * Thread-safe via synchronized block.
+     *
+     * @param programHash The program hash
+     * @param description Description for the new session
+     * @return The new session ID, or NO_SESSION on failure
+     */
+    public int createDetachedSession(String programHash, String description) {
+        synchronized (sessionLock) {
+            int sessionId = sessionRepository.createSession(programHash, description);
+            // Do NOT set currentSessionId or clear messageStore
+            return sessionId;
+        }
+    }
+
+    /**
      * Switch to a specific session.
      * Loads messages from database and updates the message store.
      * Thread-safe via synchronized block.

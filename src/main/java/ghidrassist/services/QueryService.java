@@ -18,6 +18,7 @@ import ghidrassist.chat.session.ChatSessionRepository;
 import ghidrassist.chat.util.RoleNormalizer;
 import ghidrassist.core.QueryProcessor;
 import ghidrassist.mcp2.tools.MCPToolManager;
+import ghidrassist.tools.native_.DocumentToolProvider;
 import ghidrassist.tools.native_.NativeToolManager;
 import ghidrassist.tools.registry.ToolRegistry;
 import ghidrassist.graphrag.GraphRAGService;
@@ -50,6 +51,7 @@ public class QueryService {
     private final ChatSessionManager sessionManager;
     private final MessageRepository messageRepository;
     private final ChatSessionRepository sessionRepository;
+    private NativeToolManager nativeToolManager;
 
     public QueryService(GhidrAssistPlugin plugin) {
         this.plugin = plugin;
@@ -59,8 +61,8 @@ public class QueryService {
         // Initialize tool registry with native tools
         this.toolRegistry = new ToolRegistry();
         try {
-            NativeToolManager nativeManager = new NativeToolManager(analysisDB);
-            toolRegistry.registerProvider(nativeManager);
+            this.nativeToolManager = new NativeToolManager(analysisDB);
+            toolRegistry.registerProvider(nativeToolManager);
         } catch (Exception e) {
             ghidra.util.Msg.warn(this, "Failed to initialize native tools: " + e.getMessage());
         }
@@ -595,6 +597,43 @@ public class QueryService {
         if (programHash != null && !messageStore.isEmpty()) {
             sessionManager.ensureSession(programHash);
         }
+    }
+
+    // ==================== Document Chat ====================
+
+    /**
+     * Set the handler for document chat creation on the native tool manager.
+     *
+     * @param handler The handler to use for creating document chats
+     */
+    public void setDocumentChatHandler(DocumentToolProvider.DocumentChatHandler handler) {
+        if (nativeToolManager != null) {
+            nativeToolManager.setDocumentChatHandler(handler);
+        }
+    }
+
+    /**
+     * Create a detached chat session with document content.
+     * The session appears in the sidebar without disrupting the active conversation.
+     *
+     * @param title   Title for the new chat document
+     * @param content Markdown content for the document
+     * @return The new session ID, or -1 on failure
+     */
+    public int createDocumentChat(String title, String content) {
+        String programHash = getProgramHash();
+        if (programHash == null) {
+            return -1;
+        }
+
+        int sessionId = sessionManager.createDetachedSession(programHash, title);
+        if (sessionId != ChatSessionManager.NO_SESSION) {
+            // Save the content as an assistant message
+            PersistedChatMessage msg = new PersistedChatMessage(
+                    null, "assistant", content, new Timestamp(System.currentTimeMillis()), 0);
+            messageRepository.saveMessage(programHash, sessionId, msg);
+        }
+        return sessionId;
     }
 
     // ==================== Migration Support ====================
