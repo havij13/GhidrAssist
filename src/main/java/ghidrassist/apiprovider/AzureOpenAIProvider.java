@@ -588,9 +588,12 @@ public class AzureOpenAIProvider extends APIProvider
             JsonObject messageObj = new JsonObject();
             messageObj.addProperty("role", message.getRole());
 
-            // Handle content (can be null for tool calling assistant messages)
+            // Handle content - tool messages MUST always have content (even empty string)
             if (message.getContent() != null) {
                 messageObj.addProperty("content", message.getContent());
+            } else if ("tool".equals(message.getRole())) {
+                // OpenAI requires content field for tool messages, even if empty
+                messageObj.addProperty("content", "");
             }
 
             // Handle tool calls for assistant messages

@@ -157,6 +157,9 @@ public class ConversationalToolHandler {
         userHandler.onStart();
         userHandler.onUpdate("🔄 Continuing conversation with history...\n\n");
 
+        // Validate imported history before starting - existing history may have orphaned tool_calls
+        validateAndRepairConversationHistory();
+
         continueConversation();
     }
 
@@ -205,6 +208,12 @@ public class ConversationalToolHandler {
         try {
             // Trim conversation history to prevent token overflow
             trimConversationHistory();
+
+            // Validate and repair any orphaned tool_calls before sending to API
+            validateAndRepairConversationHistory();
+
+            // Log conversation structure for debugging
+            logConversationStructure();
 
             // Call LLM with current conversation history
             // Use streaming if provider supports it (Anthropic, OpenAI, LMStudio), otherwise blocking
@@ -362,8 +371,10 @@ public class ConversationalToolHandler {
                             assistantMsg.setThinkingSignature(thinkingSignature);
                         }
 
-                        // If we have tool calls, convert them to JsonArray and attach to assistant message
-                        if (!toolCalls.isEmpty()) {
+                        // Only attach tool calls when stopReason indicates tool use.
+                        // If stopReason is "stop" but streaming accumulated partial tool call deltas,
+                        // attaching them creates orphaned tool_calls (no results will follow).
+                        if ("tool_use".equals(stopReason) && !toolCalls.isEmpty()) {
                             JsonArray toolCallsArray = new JsonArray();
                             for (AnthropicPlatformApiProvider.ToolCall toolCall : toolCalls) {
                                 JsonObject toolCallObj = new JsonObject();
@@ -380,6 +391,10 @@ public class ConversationalToolHandler {
 
                             // Attach tool calls to assistant message
                             assistantMsg.setToolCalls(toolCallsArray);
+                        } else if (!toolCalls.isEmpty()) {
+                            Msg.warn(ConversationalToolHandler.this,
+                                String.format("Discarding %d tool calls because stopReason='%s' (expected 'tool_use')",
+                                    toolCalls.size(), stopReason));
                         }
 
                         // Add assistant message to conversation history
@@ -474,7 +489,10 @@ public class ConversationalToolHandler {
                     public void onStreamComplete(String stopReason, String fullText, List<OpenAIPlatformApiProvider.ToolCall> toolCalls) {
                         ChatMessage assistantMsg = new ChatMessage(ChatMessage.ChatMessageRole.ASSISTANT, fullText);
 
-                        if (!toolCalls.isEmpty()) {
+                        // Only attach tool calls when stopReason indicates tool calling.
+                        // If stopReason is "stop" but streaming accumulated partial tool call deltas,
+                        // attaching them creates orphaned tool_calls (no results will follow).
+                        if ("tool_calls".equals(stopReason) && !toolCalls.isEmpty()) {
                             JsonArray toolCallsArray = new JsonArray();
                             for (OpenAIPlatformApiProvider.ToolCall toolCall : toolCalls) {
                                 JsonObject toolCallObj = new JsonObject();
@@ -489,6 +507,10 @@ public class ConversationalToolHandler {
                                 toolCallsArray.add(toolCallObj);
                             }
                             assistantMsg.setToolCalls(toolCallsArray);
+                        } else if (!toolCalls.isEmpty()) {
+                            Msg.warn(ConversationalToolHandler.this,
+                                String.format("Discarding %d tool calls because stopReason='%s' (expected 'tool_calls')",
+                                    toolCalls.size(), stopReason));
                         }
 
                         conversationHistory.add(assistantMsg);
@@ -552,7 +574,10 @@ public class ConversationalToolHandler {
                     public void onStreamComplete(String stopReason, String fullText, List<LMStudioProvider.ToolCall> toolCalls) {
                         ChatMessage assistantMsg = new ChatMessage(ChatMessage.ChatMessageRole.ASSISTANT, fullText);
 
-                        if (!toolCalls.isEmpty()) {
+                        // Only attach tool calls when stopReason indicates tool calling.
+                        // If stopReason is "stop" but streaming accumulated partial tool call deltas,
+                        // attaching them creates orphaned tool_calls (no results will follow).
+                        if ("tool_calls".equals(stopReason) && !toolCalls.isEmpty()) {
                             JsonArray toolCallsArray = new JsonArray();
                             for (LMStudioProvider.ToolCall toolCall : toolCalls) {
                                 JsonObject toolCallObj = new JsonObject();
@@ -567,6 +592,10 @@ public class ConversationalToolHandler {
                                 toolCallsArray.add(toolCallObj);
                             }
                             assistantMsg.setToolCalls(toolCallsArray);
+                        } else if (!toolCalls.isEmpty()) {
+                            Msg.warn(ConversationalToolHandler.this,
+                                String.format("Discarding %d tool calls because stopReason='%s' (expected 'tool_calls')",
+                                    toolCalls.size(), stopReason));
                         }
 
                         conversationHistory.add(assistantMsg);
@@ -1023,17 +1052,44 @@ public class ConversationalToolHandler {
                 }
             })
             .exceptionally(throwable -> {
-                if (!isCancelled) {
-                    Msg.error(this, "Tool execution failed: " + throwable.getMessage());
-                    
-                    // Create error result and continue
-                    JsonObject errorResult = new JsonObject();
-                    errorResult.addProperty("tool_call_id", extractToolCallId(toolCall));
-                    errorResult.addProperty("role", "tool");
-                    errorResult.addProperty("content", "Error: " + throwable.getMessage());
-                    toolResults.add(errorResult);
-                    
-                    // Add same delay for error case to maintain consistent pacing
+                try {
+                    if (!isCancelled) {
+                        Msg.error(this, "Tool execution failed: " + throwable.getMessage());
+
+                        // Safely extract tool call ID - don't let this throw and break the chain
+                        String errorToolCallId;
+                        try {
+                            errorToolCallId = extractToolCallId(toolCall);
+                        } catch (Exception idError) {
+                            Msg.warn(this, "Failed to extract tool call ID in error handler: " + idError.getMessage());
+                            errorToolCallId = "call_error_" + index;
+                        }
+
+                        // Create error result and continue
+                        JsonObject errorResult = new JsonObject();
+                        errorResult.addProperty("tool_call_id", errorToolCallId);
+                        errorResult.addProperty("role", "tool");
+                        errorResult.addProperty("content", "Error: " + throwable.getMessage());
+                        toolResults.add(errorResult);
+
+                        // Add same delay for error case to maintain consistent pacing
+                        CompletableFuture.delayedExecutor(200, java.util.concurrent.TimeUnit.MILLISECONDS)
+                            .execute(() -> {
+                                if (!isCancelled) {
+                                    executeToolsSequentially(toolCalls, index + 1, toolResults);
+                                }
+                            });
+                    }
+                } catch (Exception outerError) {
+                    // Last-resort catch: ensure the chain never breaks silently
+                    Msg.error(this, "Critical error in tool execution error handler: " + outerError.getMessage());
+                    // Still try to continue the chain with remaining tools
+                    JsonObject fallbackResult = new JsonObject();
+                    fallbackResult.addProperty("tool_call_id", "call_error_" + index);
+                    fallbackResult.addProperty("role", "tool");
+                    fallbackResult.addProperty("content", "Error: Internal error during tool execution");
+                    toolResults.add(fallbackResult);
+
                     CompletableFuture.delayedExecutor(200, java.util.concurrent.TimeUnit.MILLISECONDS)
                         .execute(() -> {
                             if (!isCancelled) {
@@ -1243,14 +1299,30 @@ public class ConversationalToolHandler {
     }
     
     /**
-     * Extract tool call ID from tool call
+     * Extract tool call ID from tool call.
+     * Handles null, JsonNull, and empty string cases that can occur when
+     * streaming doesn't fully capture the tool call ID.
      */
     private String extractToolCallId(JsonObject toolCall) {
         if (toolCall.has("id")) {
-            return toolCall.get("id").getAsString();
+            JsonElement idElement = toolCall.get("id");
+            if (idElement != null && !idElement.isJsonNull() && idElement.isJsonPrimitive()) {
+                String id = idElement.getAsString();
+                if (id != null && !id.isEmpty()) {
+                    return id;
+                }
+            }
+            // ID field exists but is null/empty - generate deterministic fallback
+            Msg.warn(this, "Tool call has null/empty ID, generating fallback. Tool call: " + toolCall.toString());
         }
-        // Generate a fallback ID
-        return "call_" + System.currentTimeMillis();
+        // Generate a deterministic fallback ID using tool name when possible
+        String toolName = "unknown";
+        try {
+            toolName = extractToolName(toolCall);
+        } catch (Exception ignored) {
+            // extractToolName can throw - use default
+        }
+        return "call_fallback_" + toolName + "_" + System.currentTimeMillis();
     }
     
     /**
@@ -1316,29 +1388,193 @@ public class ConversationalToolHandler {
     }
     
     /**
-     * Check if we can safely trim at this point without breaking tool call/result pairs
+     * Check if we can safely trim at this point without breaking tool call/result pairs.
+     * Scans backwards to ensure no preceding assistant message has tool results
+     * that extend past the candidate index.
      */
     private boolean isSafeTrimPoint(int index) {
         if (index <= 0 || index >= conversationHistory.size()) {
             return false;
         }
-        
-        ChatMessage prevMessage = conversationHistory.get(index - 1);
+
         ChatMessage currentMessage = conversationHistory.get(index);
-        
-        // Don't trim if previous message has tool calls (next messages might be tool results)
-        if (prevMessage.getToolCalls() != null && prevMessage.getToolCalls().size() > 0) {
-            return false;
-        }
-        
+
         // Don't trim if current message is a tool result (it needs its tool call)
         if (ChatMessage.ChatMessageRole.TOOL.equals(currentMessage.getRole())) {
             return false;
         }
-        
+
+        // Scan backwards from the candidate to find the nearest assistant message with tool_calls.
+        // If found, verify all its tool results are before the candidate index.
+        for (int i = index - 1; i >= 0; i--) {
+            ChatMessage msg = conversationHistory.get(i);
+
+            if (ChatMessage.ChatMessageRole.ASSISTANT.equals(msg.getRole()) &&
+                msg.getToolCalls() != null && msg.getToolCalls().size() > 0) {
+
+                // This assistant message has tool_calls. Check if any tool results
+                // for it exist at or after the candidate index.
+                int expectedResults = msg.getToolCalls().size();
+                int foundResults = 0;
+                for (int j = i + 1; j < conversationHistory.size(); j++) {
+                    ChatMessage checkMsg = conversationHistory.get(j);
+                    if (ChatMessage.ChatMessageRole.TOOL.equals(checkMsg.getRole())) {
+                        foundResults++;
+                        if (j >= index) {
+                            // Tool result extends past the trim point - not safe
+                            return false;
+                        }
+                    } else if (!ChatMessage.ChatMessageRole.TOOL.equals(checkMsg.getRole())) {
+                        break; // Stop at non-tool message
+                    }
+                }
+
+                // If we found fewer results than expected, some are missing
+                // (validation will handle this, but don't trim here)
+                if (foundResults < expectedResults) {
+                    return false;
+                }
+
+                // This assistant message's tool results are all before the candidate - safe
+                break;
+            }
+
+            // If we hit a user message, no need to look further back
+            if (ChatMessage.ChatMessageRole.USER.equals(msg.getRole())) {
+                break;
+            }
+        }
+
         return true;
     }
-    
+
+    /**
+     * Validate and repair conversation history to prevent orphaned tool_calls.
+     * Scans for assistant messages with tool_calls that lack matching tool result messages.
+     * Called before each API call as a safety net.
+     */
+    private void validateAndRepairConversationHistory() {
+        for (int i = 0; i < conversationHistory.size(); i++) {
+            ChatMessage msg = conversationHistory.get(i);
+            if (!ChatMessage.ChatMessageRole.ASSISTANT.equals(msg.getRole()) || msg.getToolCalls() == null) {
+                continue;
+            }
+
+            JsonArray toolCalls = msg.getToolCalls();
+            if (toolCalls.size() == 0) {
+                continue;
+            }
+
+            // Collect all tool_call IDs from this assistant message
+            List<String> expectedIds = new ArrayList<>();
+            for (int tc = 0; tc < toolCalls.size(); tc++) {
+                JsonObject toolCall = toolCalls.get(tc).getAsJsonObject();
+                String id = null;
+                if (toolCall.has("id")) {
+                    JsonElement idEl = toolCall.get("id");
+                    if (idEl != null && !idEl.isJsonNull() && idEl.isJsonPrimitive()) {
+                        id = idEl.getAsString();
+                    }
+                }
+                if (id != null && !id.isEmpty()) {
+                    expectedIds.add(id);
+                }
+            }
+
+            if (expectedIds.isEmpty()) {
+                // All tool call IDs are null/empty - remove tool_calls entirely
+                Msg.warn(this, "Removing tool_calls from assistant message at index " + i + ": all IDs are null/empty");
+                msg.setToolCalls(null);
+                continue;
+            }
+
+            // Check which IDs have matching tool result messages (look at messages after this one)
+            List<String> foundIds = new ArrayList<>();
+            for (int j = i + 1; j < conversationHistory.size(); j++) {
+                ChatMessage resultMsg = conversationHistory.get(j);
+                if (ChatMessage.ChatMessageRole.TOOL.equals(resultMsg.getRole()) && resultMsg.getToolCallId() != null) {
+                    foundIds.add(resultMsg.getToolCallId());
+                }
+                // Stop scanning at the next assistant or user message
+                if (ChatMessage.ChatMessageRole.ASSISTANT.equals(resultMsg.getRole()) ||
+                    ChatMessage.ChatMessageRole.USER.equals(resultMsg.getRole())) {
+                    break;
+                }
+            }
+
+            // Check for missing results
+            List<String> missingIds = new ArrayList<>();
+            for (String expectedId : expectedIds) {
+                if (!foundIds.contains(expectedId)) {
+                    missingIds.add(expectedId);
+                }
+            }
+
+            if (missingIds.isEmpty()) {
+                continue; // All results present
+            }
+
+            if (missingIds.size() == expectedIds.size()) {
+                // NO results found at all - remove tool_calls from assistant message
+                Msg.warn(this, String.format(
+                    "Removing orphaned tool_calls from assistant message at index %d: no matching tool results found for %d tool calls",
+                    i, expectedIds.size()));
+                msg.setToolCalls(null);
+            } else {
+                // SOME results missing - insert placeholder tool results
+                Msg.warn(this, String.format(
+                    "Inserting %d placeholder tool results for orphaned tool calls at index %d",
+                    missingIds.size(), i));
+
+                // Find insertion point: right after the last tool result for this assistant message
+                int insertAt = i + 1;
+                for (int j = i + 1; j < conversationHistory.size(); j++) {
+                    ChatMessage checkMsg = conversationHistory.get(j);
+                    if (ChatMessage.ChatMessageRole.TOOL.equals(checkMsg.getRole())) {
+                        insertAt = j + 1;
+                    } else {
+                        break;
+                    }
+                }
+
+                // Insert placeholders for missing IDs
+                for (String missingId : missingIds) {
+                    ChatMessage placeholder = new ChatMessage(ChatMessage.ChatMessageRole.TOOL,
+                        "Error: Tool execution result was lost due to an internal error.");
+                    placeholder.setToolCallId(missingId);
+                    conversationHistory.add(insertAt, placeholder);
+                    insertAt++;
+                }
+            }
+        }
+    }
+
+    /**
+     * Log conversation structure for debugging tool call/result matching issues.
+     * Only outputs at debug level.
+     */
+    private void logConversationStructure() {
+        if (conversationHistory.isEmpty()) {
+            return;
+        }
+        StringBuilder sb = new StringBuilder("Conversation structure (");
+        sb.append(conversationHistory.size()).append(" messages):\n");
+        for (int i = 0; i < conversationHistory.size(); i++) {
+            ChatMessage msg = conversationHistory.get(i);
+            sb.append(String.format("  [%d] role=%s", i, msg.getRole()));
+            if (msg.getToolCalls() != null) {
+                sb.append(String.format(" tool_calls=%d", msg.getToolCalls().size()));
+            }
+            if (msg.getToolCallId() != null) {
+                sb.append(String.format(" tool_call_id=%s", msg.getToolCallId()));
+            }
+            int contentLen = msg.getContent() != null ? msg.getContent().length() : 0;
+            sb.append(String.format(" content_len=%d", contentLen));
+            sb.append("\n");
+        }
+        Msg.debug(this, sb.toString());
+    }
+
     /**
      * Format tool parameters for display in execution logs
      */
