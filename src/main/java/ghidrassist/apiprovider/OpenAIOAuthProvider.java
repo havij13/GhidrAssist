@@ -230,10 +230,19 @@ public class OpenAIOAuthProvider extends APIProvider implements FunctionCallingP
                             : null;
 
                         String callId = null;
-                        if (toolCall.has("id")) {
-                            callId = toolCall.get("id").getAsString();
-                        } else if (toolCall.has("call_id")) {
-                            callId = toolCall.get("call_id").getAsString();
+                        if (toolCall.has("id") && !toolCall.get("id").isJsonNull()) {
+                            try {
+                                callId = toolCall.get("id").getAsString();
+                            } catch (Exception e) {
+                                // id exists but isn't a string primitive
+                            }
+                        }
+                        if (callId == null && toolCall.has("call_id") && !toolCall.get("call_id").isJsonNull()) {
+                            try {
+                                callId = toolCall.get("call_id").getAsString();
+                            } catch (Exception e) {
+                                // call_id exists but isn't a string primitive
+                            }
                         }
 
                         String name = null;
@@ -288,15 +297,15 @@ public class OpenAIOAuthProvider extends APIProvider implements FunctionCallingP
             }
 
             if (ChatMessage.ChatMessageRole.TOOL.equals(role) || ChatMessage.ChatMessageRole.FUNCTION.equals(role)) {
-                if (content == null || content.isEmpty()) {
-                    continue;
-                }
+                // Always emit tool results - dropping them creates orphaned function_call items
+                // which causes API 400 errors. Use empty string if content is null.
+                String outputContent = (content != null && !content.isEmpty()) ? content : "";
                 JsonObject item = new JsonObject();
                 item.addProperty("type", "function_call_output");
                 if (message.getToolCallId() != null && !message.getToolCallId().isEmpty()) {
                     item.addProperty("call_id", message.getToolCallId());
                 }
-                item.addProperty("output", content);
+                item.addProperty("output", outputContent);
                 inputItems.add(item);
             }
         }
@@ -736,7 +745,9 @@ public class OpenAIOAuthProvider extends APIProvider implements FunctionCallingP
     private JsonObject buildRequestPayload(List<ChatMessage> messages, List<Map<String, Object>> tools) {
         JsonObject payload = new JsonObject();
         payload.addProperty("model", this.model);
-        payload.add("input", translateMessagesToInput(messages));
+        JsonArray input = translateMessagesToInput(messages);
+        sanitizeResponsesApiInput(input);
+        payload.add("input", input);
         payload.addProperty("instructions", CodexInstructions.INSTRUCTIONS);
         payload.addProperty("store", false);
         payload.addProperty("stream", true);  // REQUIRED by Codex API
@@ -747,6 +758,55 @@ public class OpenAIOAuthProvider extends APIProvider implements FunctionCallingP
         }
         
         return payload;
+    }
+
+    /**
+     * Sanitize the Responses API input array to prevent orphaned function_call items.
+     * For each function_call, verifies a matching function_call_output exists.
+     * If not, removes the function_call or inserts a placeholder output.
+     */
+    private void sanitizeResponsesApiInput(JsonArray inputItems) {
+        // Collect all function_call items and their call_ids
+        java.util.Map<String, Integer> functionCallIds = new java.util.LinkedHashMap<>();
+        java.util.Set<String> functionCallOutputIds = new java.util.HashSet<>();
+
+        for (int i = 0; i < inputItems.size(); i++) {
+            JsonObject item = inputItems.get(i).getAsJsonObject();
+            String type = null;
+            if (item.has("type") && !item.get("type").isJsonNull()) {
+                type = item.get("type").getAsString();
+            }
+            if ("function_call".equals(type)) {
+                String callId = null;
+                if (item.has("call_id") && !item.get("call_id").isJsonNull()) {
+                    callId = item.get("call_id").getAsString();
+                }
+                if (callId != null && !callId.isEmpty()) {
+                    functionCallIds.put(callId, i);
+                }
+            } else if ("function_call_output".equals(type)) {
+                String callId = null;
+                if (item.has("call_id") && !item.get("call_id").isJsonNull()) {
+                    callId = item.get("call_id").getAsString();
+                }
+                if (callId != null) {
+                    functionCallOutputIds.add(callId);
+                }
+            }
+        }
+
+        // Find orphaned function_calls (no matching output)
+        for (java.util.Map.Entry<String, Integer> entry : functionCallIds.entrySet()) {
+            if (!functionCallOutputIds.contains(entry.getKey())) {
+                // Insert a placeholder function_call_output
+                JsonObject placeholder = new JsonObject();
+                placeholder.addProperty("type", "function_call_output");
+                placeholder.addProperty("call_id", entry.getKey());
+                placeholder.addProperty("output", "Error: Tool execution result was lost.");
+                inputItems.add(placeholder);
+                ghidra.util.Msg.warn(this, "Payload sanitization: inserted placeholder function_call_output for call_id=" + entry.getKey());
+            }
+        }
     }
 
     private RequestBody buildJsonRequestBody(JsonObject payload) {

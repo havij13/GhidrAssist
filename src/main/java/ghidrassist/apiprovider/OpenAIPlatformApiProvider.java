@@ -638,9 +638,163 @@ public class OpenAIPlatformApiProvider extends APIProvider implements FunctionCa
             
             messagesArray.add(messageObj);
         }
+        // Last-line-of-defense: validate tool_call/result pairing in the payload
+        sanitizeToolCallsInPayload(messagesArray);
+
         payload.add("messages", messagesArray);
 
         return payload;
+    }
+
+    /**
+     * Sanitize the messages array to prevent orphaned tool_calls from reaching the API.
+     * For each assistant message with tool_calls, verifies matching tool result messages exist.
+     * If not, removes the tool_calls or inserts placeholder tool results.
+     */
+    private void sanitizeToolCallsInPayload(JsonArray messagesArray) {
+        for (int i = 0; i < messagesArray.size(); i++) {
+            JsonObject msg = messagesArray.get(i).getAsJsonObject();
+            if (!"assistant".equals(getStringField(msg, "role"))) continue;
+            if (!msg.has("tool_calls") || msg.get("tool_calls").isJsonNull()) continue;
+
+            JsonArray toolCalls = msg.getAsJsonArray("tool_calls");
+            if (toolCalls.size() == 0) continue;
+
+            // Collect expected tool_call IDs
+            java.util.List<String> expectedIds = new java.util.ArrayList<>();
+            for (int tc = 0; tc < toolCalls.size(); tc++) {
+                JsonObject tcObj = toolCalls.get(tc).getAsJsonObject();
+                String id = getStringField(tcObj, "id");
+                if (id != null && !id.isEmpty()) {
+                    expectedIds.add(id);
+                }
+            }
+
+            if (expectedIds.isEmpty()) {
+                // All IDs are null/empty - remove tool_calls
+                msg.remove("tool_calls");
+                ghidra.util.Msg.warn(this, "Payload sanitization: removed tool_calls with null/empty IDs at message " + i);
+                continue;
+            }
+
+            // Check for matching tool result messages after this assistant message
+            java.util.Set<String> foundIds = new java.util.HashSet<>();
+            for (int j = i + 1; j < messagesArray.size(); j++) {
+                JsonObject resultMsg = messagesArray.get(j).getAsJsonObject();
+                String role = getStringField(resultMsg, "role");
+                if ("tool".equals(role)) {
+                    String tcId = getStringField(resultMsg, "tool_call_id");
+                    if (tcId != null) foundIds.add(tcId);
+                } else if ("assistant".equals(role) || "user".equals(role)) {
+                    break;
+                }
+            }
+
+            java.util.List<String> missingIds = new java.util.ArrayList<>();
+            for (String id : expectedIds) {
+                if (!foundIds.contains(id)) {
+                    missingIds.add(id);
+                }
+            }
+
+            if (missingIds.isEmpty()) continue;
+
+            if (missingIds.size() == expectedIds.size()) {
+                // No results at all - remove tool_calls from assistant message
+                msg.remove("tool_calls");
+                ghidra.util.Msg.warn(this, "Payload sanitization: removed orphaned tool_calls at message " + i +
+                    " (no matching results for " + expectedIds.size() + " tool calls)");
+            } else {
+                // Insert placeholder results for missing IDs
+                int insertAt = i + 1;
+                for (int j = i + 1; j < messagesArray.size(); j++) {
+                    if ("tool".equals(getStringField(messagesArray.get(j).getAsJsonObject(), "role"))) {
+                        insertAt = j + 1;
+                    } else {
+                        break;
+                    }
+                }
+                for (String missingId : missingIds) {
+                    JsonObject placeholder = new JsonObject();
+                    placeholder.addProperty("role", "tool");
+                    placeholder.addProperty("tool_call_id", missingId);
+                    placeholder.addProperty("content", "Error: Tool execution result was lost.");
+                    // JsonArray doesn't have an insert method, so rebuild
+                    // We'll add at the end and it will be in the right group
+                    messagesArray.add(placeholder);
+                    ghidra.util.Msg.warn(this, "Payload sanitization: inserted placeholder for tool_call_id=" + missingId);
+                }
+                // Re-order: move placeholders to the correct position
+                reorderToolResults(messagesArray);
+            }
+        }
+    }
+
+    /**
+     * Reorder messages so tool results immediately follow their assistant message.
+     */
+    private void reorderToolResults(JsonArray messagesArray) {
+        // Build a corrected list
+        java.util.List<JsonObject> ordered = new java.util.ArrayList<>();
+        for (int i = 0; i < messagesArray.size(); i++) {
+            ordered.add(messagesArray.get(i).getAsJsonObject());
+        }
+
+        java.util.List<JsonObject> result = new java.util.ArrayList<>();
+        java.util.Set<Integer> processed = new java.util.HashSet<>();
+
+        for (int i = 0; i < ordered.size(); i++) {
+            if (processed.contains(i)) continue;
+            JsonObject msg = ordered.get(i);
+            result.add(msg);
+            processed.add(i);
+
+            // If this is an assistant with tool_calls, collect all tool results for it
+            if ("assistant".equals(getStringField(msg, "role")) &&
+                msg.has("tool_calls") && !msg.get("tool_calls").isJsonNull()) {
+
+                JsonArray toolCalls = msg.getAsJsonArray("tool_calls");
+                java.util.Set<String> tcIds = new java.util.HashSet<>();
+                for (int tc = 0; tc < toolCalls.size(); tc++) {
+                    String id = getStringField(toolCalls.get(tc).getAsJsonObject(), "id");
+                    if (id != null) tcIds.add(id);
+                }
+
+                // Find all matching tool results anywhere in the array
+                for (int j = 0; j < ordered.size(); j++) {
+                    if (processed.contains(j)) continue;
+                    JsonObject candidate = ordered.get(j);
+                    if ("tool".equals(getStringField(candidate, "role"))) {
+                        String candidateId = getStringField(candidate, "tool_call_id");
+                        if (candidateId != null && tcIds.contains(candidateId)) {
+                            result.add(candidate);
+                            processed.add(j);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Replace contents of messagesArray
+        while (messagesArray.size() > 0) {
+            messagesArray.remove(0);
+        }
+        for (JsonObject msg : result) {
+            messagesArray.add(msg);
+        }
+    }
+
+    /**
+     * Safely extract a string field from a JsonObject.
+     */
+    private String getStringField(JsonObject obj, String field) {
+        if (obj.has(field)) {
+            JsonElement el = obj.get(field);
+            if (el != null && !el.isJsonNull() && el.isJsonPrimitive()) {
+                return el.getAsString();
+            }
+        }
+        return null;
     }
 
     private String extractContentFromResponse(JsonObject responseObj) {
@@ -801,7 +955,15 @@ public class OpenAIPlatformApiProvider extends APIProvider implements FunctionCa
                                             if (args.isEmpty()) {
                                                 args = "{}";
                                             }
-                                            toolCalls.add(new ToolCall(acc.id, acc.name, args));
+                                            // Generate fallback ID if streaming didn't capture one
+                                            String tcId = acc.id;
+                                            if (tcId == null || tcId.isEmpty()) {
+                                                tcId = "call_stream_" + entry.getKey() + "_" + System.currentTimeMillis();
+                                                ghidra.util.Msg.warn(OpenAIPlatformApiProvider.this,
+                                                    "Streaming tool call at index " + entry.getKey() +
+                                                    " had no ID, generated fallback: " + tcId);
+                                            }
+                                            toolCalls.add(new ToolCall(tcId, acc.name, args));
                                         });
 
                                     handler.onStreamComplete(finishReason, textBuilder.toString(), toolCalls);

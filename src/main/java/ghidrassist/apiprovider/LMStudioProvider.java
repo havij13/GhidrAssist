@@ -580,7 +580,13 @@ public class LMStudioProvider extends APIProvider implements FunctionCallingProv
                                         .sorted(java.util.Map.Entry.comparingByKey())
                                         .forEach(entry -> {
                                             JsonObject toolCallObj = entry.getValue();
-                                            String id = toolCallObj.has("id") ? toolCallObj.get("id").getAsString() : "call_" + entry.getKey();
+                                            String id = null;
+                                            if (toolCallObj.has("id") && !toolCallObj.get("id").isJsonNull() && toolCallObj.get("id").isJsonPrimitive()) {
+                                                id = toolCallObj.get("id").getAsString();
+                                            }
+                                            if (id == null || id.isEmpty()) {
+                                                id = "call_stream_" + entry.getKey() + "_" + System.currentTimeMillis();
+                                            }
                                             String name = "";
                                             String arguments = "{}";
 

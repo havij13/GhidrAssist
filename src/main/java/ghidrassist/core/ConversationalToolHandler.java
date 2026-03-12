@@ -169,9 +169,16 @@ public class ConversationalToolHandler {
     public void cancel() {
         isCancelled = true;
         isConversationActive = false;
+
+        // Clean up any orphaned tool_calls in history from in-progress tool execution.
+        // Tool execution may still be running on another thread; the flush in
+        // executeToolsSequentially will also add results, but validate/repair catches
+        // any remaining gaps.
+        validateAndRepairConversationHistory();
+
         userHandler.onUpdate("\n❌ **Cancelled**\n");
         userHandler.onComplete("Conversation cancelled");
-        
+
         // Notify completion callback
         if (onCompletionCallback != null) {
             onCompletionCallback.run();
@@ -1018,9 +1025,25 @@ public class ConversationalToolHandler {
     private void executeToolsSequentially(JsonArray toolCalls, int index, List<JsonObject> toolResults) {
         // Check cancellation before processing next tool
         if (isCancelled) {
+            // Flush any collected results to prevent orphaned tool_calls in history.
+            // Add placeholders for remaining tools that won't execute.
+            for (int remaining = index; remaining < toolCalls.size(); remaining++) {
+                String cancelledId;
+                try {
+                    cancelledId = extractToolCallId(toolCalls.get(remaining).getAsJsonObject());
+                } catch (Exception e) {
+                    cancelledId = "call_cancelled_" + remaining;
+                }
+                JsonObject cancelResult = new JsonObject();
+                cancelResult.addProperty("tool_call_id", cancelledId);
+                cancelResult.addProperty("role", "tool");
+                cancelResult.addProperty("content", "Error: Tool execution was cancelled.");
+                toolResults.add(cancelResult);
+            }
+            addToolResultsToConversation(toolResults);
             return;
         }
-        
+
         if (index >= toolCalls.size()) {
             // All tools executed, add results to conversation and continue
             addToolResultsToConversation(toolResults);
@@ -1039,16 +1062,17 @@ public class ConversationalToolHandler {
         JsonObject toolCall = toolCalls.get(index).getAsJsonObject();
         executeSingleTool(toolCall)
             .thenAccept(result -> {
+                toolResults.add(result); // Always collect the result even if cancelled
                 if (!isCancelled) {
-                    toolResults.add(result);
-                    
                     // Add small delay between tool executions to be gentle on API rate limits
                     CompletableFuture.delayedExecutor(200, java.util.concurrent.TimeUnit.MILLISECONDS)
                         .execute(() -> {
-                            if (!isCancelled) {
-                                executeToolsSequentially(toolCalls, index + 1, toolResults);
-                            }
+                            // Re-enter executeToolsSequentially which checks isCancelled and flushes
+                            executeToolsSequentially(toolCalls, index + 1, toolResults);
                         });
+                } else {
+                    // Cancelled: flush current results + placeholders for remaining tools
+                    executeToolsSequentially(toolCalls, index + 1, toolResults);
                 }
             })
             .exceptionally(throwable -> {
