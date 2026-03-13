@@ -816,54 +816,123 @@ public class QueryTab extends JPanel {
 
     /**
      * Get selected markdown text based on selection in view mode.
-     * Maps the selected plain text back to the corresponding region in the markdown source.
+     * Maps the rendered plain text selection back to the corresponding lines
+     * in the markdown source by stripping markdown formatting for comparison.
+     * Returns null if nothing is selected.
      */
     private String getSelectedMarkdownText() {
         String selectedText = responseTextPane.getSelectedText();
         if (selectedText == null || selectedText.isEmpty()) {
-            return currentMarkdownSource;
+            return null;
         }
         if (currentMarkdownSource == null || currentMarkdownSource.isEmpty()) {
             return selectedText;
         }
+        return mapRenderedTextToMarkdown(selectedText, currentMarkdownSource);
+    }
 
-        // Try to find the best matching region in the markdown source
-        String[] selectedLines = selectedText.split("\\n");
-        if (selectedLines.length == 0) {
-            return selectedText;
+    /**
+     * Map rendered plain text back to the corresponding region in the markdown source.
+     *
+     * Builds a single normalized plain-text document from the markdown (stripping all
+     * formatting), then finds the normalized selection text within it as a contiguous
+     * substring. This avoids false matches from short individual lines like "Summary"
+     * matching unrelated lines containing that word.
+     *
+     * Once the match position is found, it maps back to the original markdown line
+     * numbers and returns those lines with formatting preserved.
+     */
+    private static String mapRenderedTextToMarkdown(String renderedText, String markdownSource) {
+        String[] mdLines = markdownSource.split("\\n", -1);
+
+        // Strip each markdown line and build a single normalized document,
+        // tracking which markdown line each character range came from.
+        String[] strippedLines = new String[mdLines.length];
+        for (int i = 0; i < mdLines.length; i++) {
+            strippedLines[i] = stripMarkdownFormatting(mdLines[i]).trim();
         }
 
-        String firstLine = selectedLines[0].trim();
-        String lastLine = selectedLines[selectedLines.length - 1].trim();
-
-        if (firstLine.isEmpty() && lastLine.isEmpty()) {
-            return selectedText;
+        StringBuilder docBuilder = new StringBuilder();
+        int[] lineDocStart = new int[mdLines.length];
+        int[] lineDocEnd = new int[mdLines.length];
+        for (int i = 0; i < mdLines.length; i++) {
+            lineDocStart[i] = -1;
+            lineDocEnd[i] = -1;
         }
 
-        String searchFirst = firstLine.length() > 3 ? firstLine.substring(0, Math.min(firstLine.length(), 40)) : firstLine;
-        String searchLast = lastLine.length() > 3 ? lastLine.substring(0, Math.min(lastLine.length(), 40)) : lastLine;
-
-        int startIdx = -1;
-        if (!searchFirst.isEmpty()) {
-            startIdx = currentMarkdownSource.indexOf(searchFirst);
+        for (int i = 0; i < strippedLines.length; i++) {
+            if (strippedLines[i].isEmpty()) continue;
+            if (docBuilder.length() > 0) {
+                docBuilder.append(' ');
+            }
+            lineDocStart[i] = docBuilder.length();
+            docBuilder.append(strippedLines[i]);
+            lineDocEnd[i] = docBuilder.length();
         }
 
-        int endIdx = -1;
-        if (!searchLast.isEmpty()) {
-            endIdx = currentMarkdownSource.lastIndexOf(searchLast);
-            if (endIdx >= 0) {
-                int lineEnd = currentMarkdownSource.indexOf('\n', endIdx + searchLast.length());
-                endIdx = lineEnd >= 0 ? lineEnd : currentMarkdownSource.length();
+        // Normalize both selection and document: collapse all whitespace to single space
+        String normalizedSelection = renderedText.replaceAll("\\s+", " ").trim();
+        if (normalizedSelection.isEmpty()) {
+            return renderedText;
+        }
+        String normalizedDoc = docBuilder.toString();
+
+        // Find the full selection in the stripped document
+        int matchPos = normalizedDoc.indexOf(normalizedSelection);
+
+        // If exact match fails, try a shorter leading prefix (selection boundary may
+        // have clipped a word)
+        if (matchPos < 0 && normalizedSelection.length() > 40) {
+            matchPos = normalizedDoc.indexOf(normalizedSelection.substring(0, 40));
+        }
+
+        if (matchPos >= 0) {
+            int matchEnd = Math.min(matchPos + normalizedSelection.length(), normalizedDoc.length());
+
+            // Find the markdown lines whose stripped text overlaps the match range
+            int startLine = -1;
+            int endLine = -1;
+            for (int i = 0; i < mdLines.length; i++) {
+                if (lineDocStart[i] == -1) continue; // empty line
+                if (lineDocEnd[i] > matchPos && lineDocStart[i] < matchEnd) {
+                    if (startLine == -1) startLine = i;
+                    endLine = i;
+                }
+            }
+
+            if (startLine >= 0 && endLine >= startLine) {
+                StringBuilder result = new StringBuilder();
+                for (int i = startLine; i <= endLine; i++) {
+                    if (i > startLine) result.append('\n');
+                    result.append(mdLines[i]);
+                }
+                return result.toString();
             }
         }
 
-        if (startIdx >= 0 && endIdx >= startIdx) {
-            return currentMarkdownSource.substring(startIdx, endIdx);
-        } else if (startIdx >= 0) {
-            return currentMarkdownSource.substring(startIdx);
-        }
+        // Fallback: return the plain text selection
+        return renderedText;
+    }
 
-        return selectedText;
+    /**
+     * Strip markdown formatting from a line for plain-text comparison.
+     * Removes headers, bold, italic, code, links, list markers, blockquotes, etc.
+     */
+    private static String stripMarkdownFormatting(String line) {
+        String s = line;
+        s = s.replaceAll("^#{1,6}\\s+", "");
+        s = s.replaceAll("\\*\\*(.+?)\\*\\*", "$1");
+        s = s.replaceAll("__(.+?)__", "$1");
+        s = s.replaceAll("\\*(.+?)\\*", "$1");
+        s = s.replaceAll("(?<=\\s|^)_(.+?)_(?=\\s|$)", "$1");
+        s = s.replaceAll("`([^`]+)`", "$1");
+        s = s.replaceAll("\\[([^\\]]+)\\]\\([^)]+\\)", "$1");
+        s = s.replaceAll("!\\[([^\\]]*)]\\([^)]+\\)", "$1");
+        s = s.replaceAll("^\\s*[-*+]\\s+", "");
+        s = s.replaceAll("^\\s*\\d+\\.\\s+", "");
+        s = s.replaceAll("^>+\\s?", "");
+        s = s.replaceAll("~~(.+?)~~", "$1");
+        return s;
     }
 
     /**
