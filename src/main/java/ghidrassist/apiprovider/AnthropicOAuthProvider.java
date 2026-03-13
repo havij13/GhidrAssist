@@ -778,9 +778,7 @@ public class AnthropicOAuthProvider extends APIProvider implements FunctionCalli
                 
                 if (toolCalls != null) {
                     message.add("tool_calls", toolCalls);
-                    if (textContent.length() > 0) {
-                        message.addProperty("content", textContent.toString());
-                    }
+                    message.addProperty("content", textContent.length() > 0 ? textContent.toString() : "");
                 } else {
                     message.addProperty("content", textContent.toString());
                 }

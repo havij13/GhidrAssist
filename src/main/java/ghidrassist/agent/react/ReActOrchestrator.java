@@ -408,6 +408,7 @@ public class ReActOrchestrator {
             private final StringBuilder responseBuffer = new StringBuilder();
             private final StringBuilder displayBuffer = new StringBuilder();
             private boolean hasCalledTools = false;
+            private boolean toolsExecutedThisRound = false;
 
             @Override
             public void onStart() {
@@ -426,12 +427,13 @@ public class ReActOrchestrator {
                     // This shows tool execution, assistant thinking, etc.
                     handler.onThought(displayBuffer.toString(), currentIteration);
                 }
+            }
 
-                // Detect tool calls for tracking purposes
-                if (partialResponse.contains("🔧") || partialResponse.contains("Executing tools")) {
-                    hasCalledTools = true;
-                    toolCallCount.incrementAndGet();
-                }
+            @Override
+            public void onToolsExecuted(int toolCount) {
+                toolsExecutedThisRound = true;
+                hasCalledTools = true;
+                toolCallCount.addAndGet(toolCount);
             }
 
             @Override
@@ -442,8 +444,12 @@ public class ReActOrchestrator {
                 // Store the iteration summary (LLM's final analysis) for synthesis
                 findings.addIterationSummary(fullResponse);
 
-                // Update todos based on progress
-                updateTodosFromResponse(todoManager, fullResponse);
+                // Only mark todo complete if tools were actually executed this round
+                if (toolsExecutedThisRound) {
+                    updateTodosFromResponse(todoManager, fullResponse);
+                } else {
+                    Msg.info(ReActOrchestrator.this, "No tools executed this round - not marking todo complete");
+                }
                 handler.onTodosUpdated(todoManager.formatForPrompt());
 
                 // Check if we should continue or finish

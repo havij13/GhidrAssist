@@ -400,10 +400,7 @@ public class AnthropicPlatformApiProvider extends APIProvider implements Functio
             // Set message content based on what we found
             if (toolCalls != null) {
                 message.add("tool_calls", toolCalls);
-                // Include any text content alongside tool calls
-                if (textContent.length() > 0) {
-                    message.addProperty("content", textContent.toString());
-                }
+                message.addProperty("content", textContent.length() > 0 ? textContent.toString() : "");
             } else {
                 message.addProperty("content", textContent.toString());
             }

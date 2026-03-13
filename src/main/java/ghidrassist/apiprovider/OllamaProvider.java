@@ -216,10 +216,7 @@ public class OllamaProvider extends APIProvider implements FunctionCallingProvid
             // Set message content based on what we found
             if (toolCalls != null && toolCalls.size() > 0) {
                 message.add("tool_calls", toolCalls);
-                // Include content if present
-                if (content != null && !content.trim().isEmpty()) {
-                    message.addProperty("content", content);
-                }
+                message.addProperty("content", (content != null && !content.trim().isEmpty()) ? content : "");
             } else {
                 message.addProperty("content", content);
             }

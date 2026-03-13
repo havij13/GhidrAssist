@@ -1047,7 +1047,10 @@ public class ConversationalToolHandler {
         if (index >= toolCalls.size()) {
             // All tools executed, add results to conversation and continue
             addToolResultsToConversation(toolResults);
-            
+
+            // Signal tool execution to handler
+            userHandler.onToolsExecuted(toolCalls.size());
+
             // Add a small delay before making the next API call to avoid rapid sequential requests
             // that could trigger rate limits
             CompletableFuture.delayedExecutor(500, java.util.concurrent.TimeUnit.MILLISECONDS)
@@ -1230,8 +1233,13 @@ public class ConversationalToolHandler {
             
             // Handle case where content is null or empty
             if (content == null || content.trim().isEmpty()) {
-                content = "I'm ready to help you with this function analysis.";
-                Msg.info(this, "LLM response had no content, using default message");
+                if (toolCallRound > 0) {
+                    content = "Tool execution completed. Continuing analysis.";
+                    Msg.info(this, "LLM response had no text content after " + toolCallRound + " tool rounds");
+                } else {
+                    content = "I'm ready to help you with this function analysis.";
+                    Msg.info(this, "LLM response had no content, using default message");
+                }
             }
             
             String filteredContent = responseProcessor.filterThinkBlocks(content);

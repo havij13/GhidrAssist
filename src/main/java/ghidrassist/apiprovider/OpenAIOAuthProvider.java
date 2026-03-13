@@ -709,9 +709,7 @@ public class OpenAIOAuthProvider extends APIProvider implements FunctionCallingP
                 
                 if (!parsed.toolCalls().isEmpty()) {
                     message.add("tool_calls", parsed.toolCalls());
-                    if (!parsed.textContent().isEmpty()) {
-                        message.addProperty("content", parsed.textContent());
-                    }
+                    message.addProperty("content", parsed.textContent().isEmpty() ? "" : parsed.textContent());
                 } else {
                     message.addProperty("content", parsed.textContent());
                 }

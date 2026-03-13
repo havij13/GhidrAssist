@@ -282,5 +282,8 @@ public class LlmApi {
         default boolean shouldContinue() {
             return true;
         }
+
+        /** Called when tool calls have been executed in the current round. */
+        default void onToolsExecuted(int toolCount) {}
     }
 }
