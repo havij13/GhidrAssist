@@ -9,10 +9,12 @@ import javax.swing.text.html.HTMLEditorKit;
 import java.awt.*;
 import java.awt.datatransfer.Clipboard;
 import java.awt.datatransfer.StringSelection;
+import java.awt.event.ActionEvent;
 import java.awt.event.ComponentAdapter;
 import java.awt.event.ComponentEvent;
 import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
+import java.io.StringWriter;
 import java.text.SimpleDateFormat;
 import java.util.TimeZone;
 import java.util.Date;
@@ -230,7 +232,10 @@ public class QueryTab extends JPanel {
                 isEditMode = false;
             } else {
                 // Edit mode - notify controller to prepare content
-                controller.handleChatEditStart();
+                boolean success = controller.handleChatEditStart();
+                if (!success) {
+                    return; // Don't enter edit mode if preparation failed
+                }
 
                 // Switch to edit mode
                 contentLayout.show(contentPanel, "edit");
@@ -724,10 +729,20 @@ public class QueryTab extends JPanel {
 
         JMenuItem copyHtml = new JMenuItem("Copy as HTML");
         copyHtml.addActionListener(e -> {
-            String selectedText = responseTextPane.getSelectedText();
-            if (selectedText != null && !selectedText.isEmpty()) {
-                // For HTML, get from the rendered content
-                copyToClipboard(selectedText);
+            if (isEditMode) {
+                String selectedText = markdownEditArea.getSelectedText();
+                if (selectedText != null && !selectedText.isEmpty()) {
+                    copyToClipboard(selectedText);
+                }
+            } else {
+                int start = responseTextPane.getSelectionStart();
+                int end = responseTextPane.getSelectionEnd();
+                if (start != end) {
+                    String html = extractSelectedHtml(start, end);
+                    if (html != null && !html.isEmpty()) {
+                        copyToClipboard(html);
+                    }
+                }
             }
         });
 
@@ -737,9 +752,7 @@ public class QueryTab extends JPanel {
                     markdownEditArea.getSelectedText() :
                     responseTextPane.getSelectedText();
             if (selectedText != null && !selectedText.isEmpty()) {
-                // Strip markdown formatting for plain text
-                String plainText = selectedText.replaceAll("\\*\\*|__|`|#+ |\\[|\\]\\([^)]*\\)", "");
-                copyToClipboard(plainText);
+                copyToClipboard(selectedText);
             }
         });
 
@@ -787,19 +800,90 @@ public class QueryTab extends JPanel {
 
         responseTextPane.setComponentPopupMenu(contextMenu);
         markdownEditArea.setComponentPopupMenu(contextMenu);
+
+        // Override CTRL-C to copy markdown from view mode
+        responseTextPane.getActionMap().put("copy", new AbstractAction() {
+            private static final long serialVersionUID = 1L;
+            @Override
+            public void actionPerformed(ActionEvent e) {
+                String md = getSelectedMarkdownText();
+                if (md != null && !md.isEmpty()) {
+                    copyToClipboard(md);
+                }
+            }
+        });
     }
 
     /**
-     * Get selected markdown text based on selection in view mode
+     * Get selected markdown text based on selection in view mode.
+     * Maps the selected plain text back to the corresponding region in the markdown source.
      */
     private String getSelectedMarkdownText() {
-        // If there's selected text in the response pane, try to map to markdown
         String selectedText = responseTextPane.getSelectedText();
-        if (selectedText != null && !selectedText.isEmpty()) {
-            // For now, return the selected text - could be enhanced to map to actual markdown
+        if (selectedText == null || selectedText.isEmpty()) {
+            return currentMarkdownSource;
+        }
+        if (currentMarkdownSource == null || currentMarkdownSource.isEmpty()) {
             return selectedText;
         }
-        return currentMarkdownSource;
+
+        // Try to find the best matching region in the markdown source
+        String[] selectedLines = selectedText.split("\\n");
+        if (selectedLines.length == 0) {
+            return selectedText;
+        }
+
+        String firstLine = selectedLines[0].trim();
+        String lastLine = selectedLines[selectedLines.length - 1].trim();
+
+        if (firstLine.isEmpty() && lastLine.isEmpty()) {
+            return selectedText;
+        }
+
+        String searchFirst = firstLine.length() > 3 ? firstLine.substring(0, Math.min(firstLine.length(), 40)) : firstLine;
+        String searchLast = lastLine.length() > 3 ? lastLine.substring(0, Math.min(lastLine.length(), 40)) : lastLine;
+
+        int startIdx = -1;
+        if (!searchFirst.isEmpty()) {
+            startIdx = currentMarkdownSource.indexOf(searchFirst);
+        }
+
+        int endIdx = -1;
+        if (!searchLast.isEmpty()) {
+            endIdx = currentMarkdownSource.lastIndexOf(searchLast);
+            if (endIdx >= 0) {
+                int lineEnd = currentMarkdownSource.indexOf('\n', endIdx + searchLast.length());
+                endIdx = lineEnd >= 0 ? lineEnd : currentMarkdownSource.length();
+            }
+        }
+
+        if (startIdx >= 0 && endIdx >= startIdx) {
+            return currentMarkdownSource.substring(startIdx, endIdx);
+        } else if (startIdx >= 0) {
+            return currentMarkdownSource.substring(startIdx);
+        }
+
+        return selectedText;
+    }
+
+    /**
+     * Extract HTML content for the selected range from the JTextPane's document.
+     */
+    private String extractSelectedHtml(int start, int end) {
+        try {
+            Document doc = responseTextPane.getDocument();
+            if (doc instanceof HTMLDocument) {
+                HTMLEditorKit kit = new HTMLEditorKit();
+                StringWriter writer = new StringWriter();
+                kit.write(writer, doc, start, end - start);
+                return writer.toString();
+            }
+            // Fallback for non-HTML documents
+            return responseTextPane.getSelectedText();
+        } catch (Exception e) {
+            Msg.warn(this, "Failed to extract HTML: " + e.getMessage());
+            return responseTextPane.getSelectedText();
+        }
     }
 
     /**

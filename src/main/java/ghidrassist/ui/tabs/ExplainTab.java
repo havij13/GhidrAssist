@@ -9,6 +9,8 @@ import javax.swing.text.html.HTMLEditorKit;
 import java.awt.*;
 import java.awt.datatransfer.Clipboard;
 import java.awt.datatransfer.StringSelection;
+import java.awt.event.ActionEvent;
+import java.io.StringWriter;
 import java.util.List;
 import ghidra.util.Msg;
 import ghidrassist.core.MarkdownHelper;
@@ -346,9 +348,20 @@ public class ExplainTab extends JPanel {
 
         JMenuItem copyHtml = new JMenuItem("Copy as HTML");
         copyHtml.addActionListener(e -> {
-            String selectedText = explainTextPane.getSelectedText();
-            if (selectedText != null && !selectedText.isEmpty()) {
-                copyToClipboard(selectedText);
+            if (isEditMode) {
+                String selectedText = markdownTextArea.getSelectedText();
+                if (selectedText != null && !selectedText.isEmpty()) {
+                    copyToClipboard(selectedText);
+                }
+            } else {
+                int start = explainTextPane.getSelectionStart();
+                int end = explainTextPane.getSelectionEnd();
+                if (start != end) {
+                    String html = extractSelectedHtml(start, end);
+                    if (html != null && !html.isEmpty()) {
+                        copyToClipboard(html);
+                    }
+                }
             }
         });
 
@@ -358,9 +371,7 @@ public class ExplainTab extends JPanel {
                     markdownTextArea.getSelectedText() :
                     explainTextPane.getSelectedText();
             if (selectedText != null && !selectedText.isEmpty()) {
-                // Strip markdown formatting for plain text
-                String plainText = selectedText.replaceAll("\\*\\*|__|`|#+ |\\[|\\]\\([^)]*\\)", "");
-                copyToClipboard(plainText);
+                copyToClipboard(selectedText);
             }
         });
 
@@ -408,17 +419,91 @@ public class ExplainTab extends JPanel {
 
         explainTextPane.setComponentPopupMenu(contextMenu);
         markdownTextArea.setComponentPopupMenu(contextMenu);
+
+        // Override CTRL-C to copy markdown from view mode
+        explainTextPane.getActionMap().put("copy", new AbstractAction() {
+            private static final long serialVersionUID = 1L;
+            @Override
+            public void actionPerformed(ActionEvent e) {
+                String md = getSelectedMarkdownText();
+                if (md != null && !md.isEmpty()) {
+                    copyToClipboard(md);
+                }
+            }
+        });
     }
 
     /**
-     * Get selected markdown text based on selection in view mode
+     * Get selected markdown text based on selection in view mode.
+     * Maps the selected plain text back to the corresponding region in the markdown source.
      */
     private String getSelectedMarkdownText() {
         String selectedText = explainTextPane.getSelectedText();
-        if (selectedText != null && !selectedText.isEmpty()) {
+        if (selectedText == null || selectedText.isEmpty()) {
+            return currentMarkdown;
+        }
+        if (currentMarkdown == null || currentMarkdown.isEmpty()) {
             return selectedText;
         }
-        return currentMarkdown;
+
+        // Try to find the best matching region in the markdown source
+        // Use the first and last lines of selected text as anchors
+        String[] selectedLines = selectedText.split("\\n");
+        if (selectedLines.length == 0) {
+            return selectedText;
+        }
+
+        String firstLine = selectedLines[0].trim();
+        String lastLine = selectedLines[selectedLines.length - 1].trim();
+
+        if (firstLine.isEmpty() && lastLine.isEmpty()) {
+            return selectedText;
+        }
+
+        // Search for first line in markdown
+        String searchFirst = firstLine.length() > 3 ? firstLine.substring(0, Math.min(firstLine.length(), 40)) : firstLine;
+        String searchLast = lastLine.length() > 3 ? lastLine.substring(0, Math.min(lastLine.length(), 40)) : lastLine;
+
+        int startIdx = -1;
+        if (!searchFirst.isEmpty()) {
+            startIdx = currentMarkdown.indexOf(searchFirst);
+        }
+
+        int endIdx = -1;
+        if (!searchLast.isEmpty()) {
+            endIdx = currentMarkdown.lastIndexOf(searchLast);
+            if (endIdx >= 0) {
+                // Find end of the line containing the match
+                int lineEnd = currentMarkdown.indexOf('\n', endIdx + searchLast.length());
+                endIdx = lineEnd >= 0 ? lineEnd : currentMarkdown.length();
+            }
+        }
+
+        if (startIdx >= 0 && endIdx >= startIdx) {
+            return currentMarkdown.substring(startIdx, endIdx);
+        } else if (startIdx >= 0) {
+            return currentMarkdown.substring(startIdx);
+        }
+
+        // Fallback: return the plain text selection
+        return selectedText;
+    }
+
+    /**
+     * Extract HTML content for the selected range from the JEditorPane's HTMLDocument.
+     */
+    private String extractSelectedHtml(int start, int end) {
+        try {
+            HTMLEditorKit kit = (HTMLEditorKit) explainTextPane.getEditorKit();
+            HTMLDocument doc = (HTMLDocument) explainTextPane.getDocument();
+            StringWriter writer = new StringWriter();
+            kit.write(writer, doc, start, end - start);
+            return writer.toString();
+        } catch (Exception e) {
+            Msg.warn(this, "Failed to extract HTML: " + e.getMessage());
+            // Fallback to plain text
+            return explainTextPane.getSelectedText();
+        }
     }
 
     /**

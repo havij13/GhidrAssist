@@ -178,6 +178,16 @@ public class ChatSessionManager {
     }
 
     /**
+     * Set the current session ID without loading messages from database.
+     * Used for ReAct sessions where message formatting is handled separately.
+     *
+     * @param sessionId The session ID to set as current
+     */
+    public void setCurrentSessionId(int sessionId) {
+        currentSessionId.set(sessionId);
+    }
+
+    /**
      * Clear the current session without deleting from database.
      * Used when starting fresh conversation.
      */

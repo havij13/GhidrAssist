@@ -345,14 +345,18 @@ public class TabController {
                     }
                 }
 
-                // Step 3: Run semantic analysis if no summary OR stale AND not user-edited
+                // Step 3: Always run a fresh LLM query when user clicks Explain Function
                 if (node != null) {
-                    boolean hasExistingSummary = node.getLlmSummary() != null && !node.getLlmSummary().isEmpty();
-                    boolean isStaleAndNotEdited = node.isStale() && !node.isUserEdited();
-                    boolean needsSummary = !hasExistingSummary || isStaleAndNotEdited;
+                    // Clear previous content before starting new query
+                    SwingUtilities.invokeLater(() -> {
+                        explainTab.setExplanationText("");
+                        explainTab.setMarkdownSource("");
+                    });
 
-                    Msg.info(this, String.format("Semantic analysis check: hasExistingSummary=%b, isStale=%b, isUserEdited=%b, needsSummary=%b",
-                            hasExistingSummary, node.isStale(), node.isUserEdited(), needsSummary));
+                    boolean needsSummary = true; // Always run fresh LLM query
+
+                    Msg.info(this, String.format("Semantic analysis: always running fresh query (hasExistingSummary=%b, isStale=%b, isUserEdited=%b)",
+                            node.getLlmSummary() != null && !node.getLlmSummary().isEmpty(), node.isStale(), node.isUserEdited()));
 
                     if (needsSummary) {
                         // Create semantic extractor
@@ -1494,11 +1498,12 @@ public class TabController {
     // ==== Chat Edit Mode Handlers ====
 
     /**
-     * Handle when user clicks Edit button - prepare editable content
+     * Handle when user clicks Edit button - prepare editable content.
+     * @return true if edit mode was successfully entered, false on failure
      */
-    public void handleChatEditStart() {
+    public boolean handleChatEditStart() {
         if (queryTab == null) {
-            return;
+            return false;
         }
 
         int currentSessionId = queryService.getCurrentSessionId();
@@ -1506,30 +1511,24 @@ public class TabController {
         if (currentSessionId == -1) {
             Msg.showInfo(this, queryTab, "No Chat",
                     "No active chat session to edit.");
-            queryTab.exitEditMode();
-            return;
+            return false;
         }
 
-        // Load messages from database if not already loaded
-        queryService.loadMessagesFromDatabase();
-
-        // Get messages for current session
+        // Use in-memory messages first (already current after streaming completion)
         List<PersistedChatMessage> messages = queryService.getMessages();
-        Msg.info(this, "Edit Start: loaded " + messages.size() + " messages from memory");
 
-        // DEBUG: Log first few messages to see if user query is present
-        for (int i = 0; i < Math.min(3, messages.size()); i++) {
-            PersistedChatMessage msg = messages.get(i);
-            Msg.info(this, String.format("  Message[%d]: role=%s, order=%d, content=%s",
-                i, msg.getRole(), msg.getOrder(),
-                msg.getContent().substring(0, Math.min(50, msg.getContent().length()))));
+        // Fall back to database if in-memory is empty
+        if (messages.isEmpty()) {
+            queryService.loadMessagesFromDatabase();
+            messages = queryService.getMessages();
         }
+
+        Msg.info(this, "Edit Start: loaded " + messages.size() + " messages");
 
         if (messages.isEmpty()) {
             Msg.showInfo(this, queryTab, "Empty Chat",
                     "No messages to edit in this chat.");
-            queryTab.exitEditMode();
-            return;
+            return false;
         }
 
         // Get chat name from sessions list
@@ -1545,6 +1544,7 @@ public class TabController {
         // Generate editable content with chunk markers
         String editableContent = chatEditManager.generateEditableContent(chatName, messages);
         queryTab.setEditableContent(editableContent);
+        return true;
     }
 
     /**
@@ -2367,10 +2367,14 @@ public class TabController {
             return;
         }
 
-        long address = loc.getAddress().getOffset();
         Function function = plugin.getCurrentFunction();
         String functionName = function != null ?
             ghidrassist.services.symgraph.SymGraphUtils.getQualifiedFunctionName(function) : null;
+
+        // Use function entry point address for graph lookup (nodes are indexed by entry point)
+        long address = function != null ?
+            function.getEntryPoint().getOffset() :
+            loc.getAddress().getOffset();
 
         SwingUtilities.invokeLater(() -> {
             semanticGraphTab.updateLocation(address, functionName);

@@ -554,8 +554,8 @@ public class QueryService {
             displayList.add(displayMsg);
             messageStore.setMessages(displayList);
 
-            // Update session manager's current session
-            // (ReAct sessions bypass normal session switching)
+            // Set the session ID so Edit and other operations work
+            sessionManager.setCurrentSessionId(sessionId);
             return true;
         }
         return false;
