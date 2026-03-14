@@ -66,6 +66,9 @@ import java.util.concurrent.TimeUnit;
  */
 public class TabController {
 
+    // File chooser directory memory
+    private static File lastDocumentDirectory = null;
+
     // Services (business logic)
     private final CodeAnalysisService codeAnalysisService;
     private final QueryService queryService;
@@ -1064,6 +1067,7 @@ public class TabController {
 
         int result = fileChooser.showOpenDialog(ragManagementTab);
         if (result == JFileChooser.APPROVE_OPTION) {
+            lastDocumentDirectory = fileChooser.getCurrentDirectory();
             File[] files = fileChooser.getSelectedFiles();
             try {
                 ragManagementService.addDocuments(files);
@@ -1864,6 +1868,9 @@ public class TabController {
         JFileChooser fileChooser = new JFileChooser();
         fileChooser.setDialogTitle("Select Documents to Add to RAG");
         fileChooser.setMultiSelectionEnabled(true);
+        if (lastDocumentDirectory != null) {
+            fileChooser.setCurrentDirectory(lastDocumentDirectory);
+        }
         fileChooser.addChoosableFileFilter(
             new javax.swing.filechooser.FileNameExtensionFilter(
                 "Text and Markdown Files", "txt", "md"));
