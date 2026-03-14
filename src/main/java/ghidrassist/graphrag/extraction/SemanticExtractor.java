@@ -9,6 +9,7 @@ import ghidrassist.graphrag.BinaryKnowledgeGraph;
 import ghidrassist.graphrag.nodes.KnowledgeNode;
 import ghidrassist.graphrag.nodes.NodeType;
 import ghidrassist.LlmApi;
+import ghidrassist.core.ResponseProcessor;
 
 import java.util.*;
 import java.util.concurrent.*;
@@ -34,6 +35,7 @@ public class SemanticExtractor {
 
     private final APIProvider provider;
     private final BinaryKnowledgeGraph graph;
+    private final ResponseProcessor responseProcessor = new ResponseProcessor();
     @SuppressWarnings("unused")  // Reserved for future multi-binary support
     private final String binaryId;
 
@@ -622,6 +624,7 @@ public class SemanticExtractor {
             messages.add(new ChatMessage("user", prompt));
 
             String response = provider.createChatCompletion(messages);
+            response = responseProcessor.filterThinkBlocks(response);
             Msg.info(this, "callLLM: received response " +
                     (response != null ? response.length() + " chars" : "null"));
             return response;
@@ -725,6 +728,12 @@ public class SemanticExtractor {
          * @param error The error that occurred
          */
         void onError(Throwable error);
+
+        /**
+         * Called when the LLM enters or exits a thinking block.
+         * @param thinking true when entering a think block, false when exiting
+         */
+        default void onThinkingStateChanged(boolean thinking) {}
 
         /**
          * Check if streaming should continue.
@@ -853,6 +862,11 @@ public class SemanticExtractor {
             public boolean shouldContinue() {
                 return callback.shouldContinue();
             }
+
+            @Override
+            public void onThinkingStateChanged(boolean thinking) {
+                callback.onThinkingStateChanged(thinking);
+            }
         });
     }
 
@@ -874,8 +888,46 @@ public class SemanticExtractor {
                     "You are a binary analysis assistant. Provide concise, technical summaries focused on functionality and security."));
             messages.add(new ChatMessage("user", prompt));
 
-            // Use streaming API
-            provider.streamChatCompletion(messages, handler);
+            // Use streaming API with think-tag filtering
+            ResponseProcessor.StreamingResponseFilter filter = responseProcessor.createStreamingFilter();
+            provider.streamChatCompletion(messages, new LlmApi.LlmResponseHandler() {
+                private boolean wasThinking = false;
+
+                @Override
+                public void onStart() { handler.onStart(); }
+
+                @Override
+                public void onUpdate(String partialResponse) {
+                    String filtered = filter.processChunk(partialResponse);
+                    boolean isThinking = filter.isInsideThinkBlock();
+
+                    // Signal thinking state transitions
+                    if (isThinking && !wasThinking) {
+                        handler.onThinkingStateChanged(true);
+                    } else if (!isThinking && wasThinking) {
+                        handler.onThinkingStateChanged(false);
+                    }
+                    wasThinking = isThinking;
+
+                    if (!isThinking && filtered != null && !filtered.isEmpty()) {
+                        handler.onUpdate(filtered);
+                    }
+                }
+
+                @Override
+                public void onComplete(String fullResponse) {
+                    if (wasThinking) {
+                        handler.onThinkingStateChanged(false);
+                    }
+                    handler.onComplete(filter.getFilteredContent());
+                }
+
+                @Override
+                public void onError(Throwable error) { handler.onError(error); }
+
+                @Override
+                public boolean shouldContinue() { return handler.shouldContinue(); }
+            });
         } catch (APIProviderException e) {
             handler.onError(e);
         }

@@ -56,8 +56,10 @@ public class QueryTab extends JPanel {
         "#addr to include the current hex address.\n" +
         "#range(start, end) to include the view data in a given range.";
 
-    // Use shared CSS from MarkdownHelper for consistency between streaming and final rendering
-    private static final String STREAMING_CSS = MarkdownHelper.MARKDOWN_CSS;
+    // Use shared theme-aware CSS from MarkdownHelper for consistency
+    private static String getStreamingCSS() {
+        return MarkdownHelper.getThemeAwareCSS();
+    }
 
     // Streaming state fields
     private StringBuilder accumulatedCommittedHtml = new StringBuilder();
@@ -243,7 +245,21 @@ public class QueryTab extends JPanel {
                 isEditMode = true;
             }
         });
-        
+
+        // ESC key discards edits and returns to view mode
+        markdownEditArea.getInputMap(JComponent.WHEN_FOCUSED)
+            .put(KeyStroke.getKeyStroke("ESCAPE"), "cancelEdit");
+        markdownEditArea.getActionMap().put("cancelEdit", new AbstractAction() {
+            @Override
+            public void actionPerformed(ActionEvent ae) {
+                if (isEditMode) {
+                    contentLayout.show(contentPanel, "view");
+                    editSaveButton.setText("Edit");
+                    isEditMode = false;
+                }
+            }
+        });
+
         // Chat history table selection listener
         chatHistoryTable.getSelectionModel().addListSelectionListener(e -> {
             if (!e.getValueIsAdjusting()) {
@@ -370,7 +386,7 @@ public class QueryTab extends JPanel {
                 "<div id=\"committed\"></div>" +
                 "<div id=\"pending\"><span></span></div>" +
                 "</body></html>",
-                STREAMING_CSS, prefix);
+                getStreamingCSS(), prefix);
 
             responseTextPane.setText(initialHtml);
             responseDocument = responseTextPane.getStyledDocument();
@@ -475,7 +491,7 @@ public class QueryTab extends JPanel {
     private void applyFullReplaceUpdate(RenderUpdate update) {
         String fullHtml = update.getFullHtml();
         if (fullHtml != null) {
-            String wrapped = "<html><head><style>" + STREAMING_CSS + "</style></head><body>" +
+            String wrapped = "<html><head><style>" + getStreamingCSS() + "</style></head><body>" +
                     fullHtml + "</body></html>";
             responseTextPane.setContentType("text/html");
             responseTextPane.setEditorKit(new HTMLEditorKit());
@@ -485,7 +501,7 @@ public class QueryTab extends JPanel {
     }
 
     private void rebuildDocument() {
-        String html = "<html><head><style>" + STREAMING_CSS + "</style></head><body>" +
+        String html = "<html><head><style>" + getStreamingCSS() + "</style></head><body>" +
                 accumulatedCommittedHtml.toString() +
                 lastPendingHtml +
                 "</body></html>";
@@ -510,7 +526,7 @@ public class QueryTab extends JPanel {
 
         responseTextPane.setContentType("text/html");
         responseTextPane.setEditorKit(new HTMLEditorKit());
-        String repairedHtml = "<html><head><style>" + STREAMING_CSS + "</style></head><body>" +
+        String repairedHtml = "<html><head><style>" + getStreamingCSS() + "</style></head><body>" +
                 "<div id=\"committed\">" + accumulatedCommittedHtml + "</div>" +
                 "<div id=\"pending\">" + lastPendingHtml + "</div>" +
                 "</body></html>";

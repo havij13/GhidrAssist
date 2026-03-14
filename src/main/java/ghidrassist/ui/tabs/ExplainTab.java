@@ -51,15 +51,10 @@ public class ExplainTab extends JPanel {
     private JSplitPane outerSplitPane;
     private JButton lineExplanationCloseButton;
 
-    // Streaming markdown rendering CSS (same as QueryTab)
-    private static final String STREAMING_CSS =
-        "body { font-family: sans-serif; font-size: 14px; margin: 8px; }" +
-        "pre { background-color: #f4f4f4; padding: 8px; border: 1px solid #ddd; overflow-x: auto; }" +
-        "code { background-color: #f4f4f4; padding: 2px 4px; }" +
-        "table { border-collapse: collapse; margin: 8px 0; }" +
-        "th, td { border: 1px solid #ddd; padding: 4px 8px; }" +
-        "th { background-color: #f0f0f0; }" +
-        "blockquote { border-left: 3px solid #ccc; margin-left: 0; padding-left: 12px; color: #555; }";
+    // Use shared theme-aware CSS from MarkdownHelper
+    private static String getStreamingCSS() {
+        return MarkdownHelper.getThemeAwareCSS();
+    }
 
     // Streaming state for function explanation pane
     private StringBuilder accumulatedCommittedHtml = new StringBuilder();
@@ -294,6 +289,20 @@ public class ExplainTab extends JPanel {
                 contentLayout.show(contentPanel, "edit");
                 editSaveButton.setText("Save");
                 isEditMode = true;
+            }
+        });
+
+        // ESC key discards edits and returns to view mode
+        markdownTextArea.getInputMap(JComponent.WHEN_FOCUSED)
+            .put(KeyStroke.getKeyStroke("ESCAPE"), "cancelEdit");
+        markdownTextArea.getActionMap().put("cancelEdit", new AbstractAction() {
+            @Override
+            public void actionPerformed(ActionEvent ae) {
+                if (isEditMode) {
+                    contentLayout.show(contentPanel, "view");
+                    editSaveButton.setText("Edit");
+                    isEditMode = false;
+                }
             }
         });
     }
@@ -803,7 +812,7 @@ public class ExplainTab extends JPanel {
                 "<div id=\"committed\"></div>" +
                 "<div id=\"pending\"><span></span></div>" +
                 "</body></html>",
-                STREAMING_CSS, prefix);
+                getStreamingCSS(), prefix);
 
             explainTextPane.setText(initialHtml);
 
@@ -893,7 +902,7 @@ public class ExplainTab extends JPanel {
     private void applyFullReplaceUpdate(RenderUpdate update) {
         String fullHtml = update.getFullHtml();
         if (fullHtml != null) {
-            String wrapped = "<html><head><style>" + STREAMING_CSS + "</style></head><body>" +
+            String wrapped = "<html><head><style>" + getStreamingCSS() + "</style></head><body>" +
                     fullHtml + "</body></html>";
             explainTextPane.setText(wrapped);
             documentCorrupted = false;
@@ -904,7 +913,7 @@ public class ExplainTab extends JPanel {
     }
 
     private void rebuildDocument() {
-        String html = "<html><head><style>" + STREAMING_CSS + "</style></head><body>" +
+        String html = "<html><head><style>" + getStreamingCSS() + "</style></head><body>" +
                 accumulatedCommittedHtml.toString() +
                 lastPendingHtml +
                 "</body></html>";
@@ -957,7 +966,7 @@ public class ExplainTab extends JPanel {
                 "<div id=\"line-committed\"></div>" +
                 "<div id=\"line-pending\"><span></span></div>" +
                 "</body></html>",
-                STREAMING_CSS);
+                getStreamingCSS());
 
             lineExplanationTextPane.setText(initialHtml);
 
@@ -1060,7 +1069,7 @@ public class ExplainTab extends JPanel {
     private void applyLineFullReplaceUpdate(RenderUpdate update) {
         String fullHtml = update.getFullHtml();
         if (fullHtml != null) {
-            String wrapped = "<html><head><style>" + STREAMING_CSS + "</style></head><body>" +
+            String wrapped = "<html><head><style>" + getStreamingCSS() + "</style></head><body>" +
                     fullHtml + "</body></html>";
             lineExplanationTextPane.setText(wrapped);
             lineDocumentCorrupted = false;
@@ -1071,7 +1080,7 @@ public class ExplainTab extends JPanel {
     }
 
     private void rebuildLineDocument() {
-        String html = "<html><head><style>" + STREAMING_CSS + "</style></head><body>" +
+        String html = "<html><head><style>" + getStreamingCSS() + "</style></head><body>" +
                 lineAccumulatedCommittedHtml.toString() +
                 lineLastPendingHtml +
                 "</body></html>";

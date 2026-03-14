@@ -411,6 +411,13 @@ public class TabController {
                             }
 
                             @Override
+                            public void onThinkingStateChanged(boolean thinking) {
+                                if (currentExplainStreamingRenderer != null) {
+                                    currentExplainStreamingRenderer.setThinking(thinking);
+                                }
+                            }
+
+                            @Override
                             public void onSummaryComplete(String fullSummary, KnowledgeNode updatedNode) {
                                 Msg.info(this, "Streaming complete for function explain");
 

@@ -285,5 +285,8 @@ public class LlmApi {
 
         /** Called when tool calls have been executed in the current round. */
         default void onToolsExecuted(int toolCount) {}
+
+        /** Called when the LLM enters or exits a thinking block. */
+        default void onThinkingStateChanged(boolean thinking) {}
     }
 }

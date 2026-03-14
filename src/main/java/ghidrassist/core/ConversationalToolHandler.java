@@ -16,8 +16,11 @@ import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 
 import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 
 /**
@@ -41,9 +44,23 @@ public class ConversationalToolHandler {
     private int rateLimitRetries = 0;
     private int toolCallRound = 0; // Track tool calling rounds within iteration
     private static final int MAX_RATE_LIMIT_BACKOFF_SECONDS = 60;
-    private static final int MAX_CONVERSATION_HISTORY = 20; // Keep last 20 messages to prevent token overflow
+    private static final int MAX_CONVERSATION_HISTORY = 40; // Safety net message count cap
+    private static final int MAX_CONVERSATION_CHARS = 600000; // ~150K tokens at 4 chars/token
+    private static final double COMPRESSION_THRESHOLD = 0.75; // Trigger compression at 75% of char limit
+    private static final int MIN_RECENT_MESSAGES = 8; // Always keep last 8 messages
     private final int maxToolRounds; // Maximum tool calling rounds per iteration (configurable)
     private static final int API_TIMEOUT_SECONDS = 300; // Timeout for blocking API calls (generous for rate limit retries)
+
+    private static final String SUMMARY_PROMPT = "Summarize the following investigation conversation concisely.\n\n" +
+        "Preserve these key elements:\n" +
+        "- Important discoveries and findings\n" +
+        "- Tools that were used and their significant results\n" +
+        "- Current investigation progress and state\n" +
+        "- Any identified patterns, vulnerabilities, or issues\n" +
+        "- Key addresses, function names, or code references mentioned\n\n" +
+        "Previous conversation to summarize:\n%s\n\n" +
+        "Provide a concise summary (target: ~500 words) that captures the essential context " +
+        "needed to continue this investigation effectively. Focus on facts and findings, not the conversation flow.";
 
     public ConversationalToolHandler(
             LlmApiClient apiClient,
@@ -1358,51 +1375,248 @@ public class ConversationalToolHandler {
     }
     
     /**
-     * Trim conversation history to prevent token overflow
-     * Keeps the first message and ensures tool call/result pairs stay together
+     * Trim conversation history to prevent token overflow.
+     * Uses LLM-based summarization (with extractive fallback) to preserve context
+     * about which tools were called and what was found, preventing infinite tool loops.
      */
     private void trimConversationHistory() {
-        if (conversationHistory.size() <= MAX_CONVERSATION_HISTORY) {
+        long totalChars = estimateTotalChars();
+        boolean charThresholdExceeded = totalChars >= (long)(MAX_CONVERSATION_CHARS * COMPRESSION_THRESHOLD);
+        boolean messageCountExceeded = conversationHistory.size() > MAX_CONVERSATION_HISTORY;
+
+        if (!charThresholdExceeded && !messageCountExceeded) {
             return; // No trimming needed
         }
-        
-        List<ChatMessage> trimmedHistory = new ArrayList<>();
 
-        // Always keep the system message (index 0) and the first user message (original query)
+        Msg.info(this, String.format("Context compression triggered: ~%d chars, %d messages",
+            totalChars, conversationHistory.size()));
+
+        // Identify beginning messages to always keep: system + first user query
+        List<ChatMessage> beginning = new ArrayList<>();
+        int firstUserIndex = -1;
         if (!conversationHistory.isEmpty()) {
-            trimmedHistory.add(conversationHistory.get(0));  // System message
-
-            // Find and keep the first USER message (the original query)
+            beginning.add(conversationHistory.get(0)); // System message
             for (int i = 1; i < conversationHistory.size(); i++) {
-                ChatMessage msg = conversationHistory.get(i);
-                if (ChatMessage.ChatMessageRole.USER.equals(msg.getRole())) {
-                    trimmedHistory.add(msg);
-                    break;  // Only keep the first user message
+                if (ChatMessage.ChatMessageRole.USER.equals(conversationHistory.get(i).getRole())) {
+                    beginning.add(conversationHistory.get(i));
+                    firstUserIndex = i;
+                    break;
                 }
             }
         }
 
-        // Find a safe cutoff point that doesn't break tool call/result pairs
+        // Find safe trim point for recent messages to keep
         int safeStartIndex = findSafeTrimPoint();
-        
-        // Add messages from safe point to end
+        // Ensure we keep at least MIN_RECENT_MESSAGES
+        int minStartIndex = Math.max(0, conversationHistory.size() - MIN_RECENT_MESSAGES);
+        if (safeStartIndex > minStartIndex) {
+            // findSafeTrimPoint may return a point that keeps fewer messages than MIN_RECENT_MESSAGES;
+            // walk backwards from minStartIndex to find a safe point
+            for (int i = minStartIndex; i >= 0; i--) {
+                if (isSafeTrimPoint(i)) {
+                    safeStartIndex = i;
+                    break;
+                }
+            }
+        }
+
+        // Collect messages to discard (between beginning and recent kept)
+        int discardStart = (firstUserIndex >= 0) ? firstUserIndex + 1 : 1;
+        List<ChatMessage> messagesToDiscard = new ArrayList<>();
+        for (int i = discardStart; i < safeStartIndex; i++) {
+            messagesToDiscard.add(conversationHistory.get(i));
+        }
+
+        if (messagesToDiscard.isEmpty()) {
+            return; // Nothing to summarize
+        }
+
+        // Generate summary of discarded messages
+        String summary = generateSummary(messagesToDiscard);
+
+        // Rebuild history: beginning + summary + recent messages
+        List<ChatMessage> trimmedHistory = new ArrayList<>(beginning);
+
+        // Insert summary as a USER message
+        ChatMessage summaryMessage = new ChatMessage(ChatMessage.ChatMessageRole.USER,
+            "[Previous Investigation Summary]\n\n" + summary + "\n\n[End of Summary - Continuing Investigation]");
+        trimmedHistory.add(summaryMessage);
+
+        // Add recent messages from safe point to end
         for (int i = safeStartIndex; i < conversationHistory.size(); i++) {
             trimmedHistory.add(conversationHistory.get(i));
         }
-        
+
         // Replace conversation history
         conversationHistory.clear();
         conversationHistory.addAll(trimmedHistory);
-        
-        Msg.info(this, String.format("Trimmed conversation history to %d messages (safe tool-call trimming)", 
-            conversationHistory.size()));
+
+        Msg.info(this, String.format("Context compressed: %d messages, ~%d chars (summarized %d messages)",
+            conversationHistory.size(), estimateTotalChars(), messagesToDiscard.size()));
+    }
+
+    /**
+     * Estimate total character count across all messages in the conversation.
+     */
+    private long estimateTotalChars() {
+        long total = 0;
+        for (ChatMessage msg : conversationHistory) {
+            if (msg.getContent() != null) {
+                total += msg.getContent().length();
+            }
+            if (msg.getToolCalls() != null) {
+                total += msg.getToolCalls().toString().length();
+            }
+        }
+        return total;
+    }
+
+    /**
+     * Generate a summary of discarded messages using LLM-based summarization.
+     * Falls back to extractive summary on failure.
+     */
+    private String generateSummary(List<ChatMessage> messagesToDiscard) {
+        String formattedConversation = formatMessagesForSummary(messagesToDiscard);
+
+        // Truncate to 40000 chars before sending to summarizer
+        if (formattedConversation.length() > 40000) {
+            formattedConversation = formattedConversation.substring(0, 40000) + "\n[... truncated ...]";
+        }
+
+        try {
+            String prompt = String.format(SUMMARY_PROMPT, formattedConversation);
+            List<ChatMessage> summaryMessages = new ArrayList<>();
+            summaryMessages.add(new ChatMessage(ChatMessage.ChatMessageRole.USER, prompt));
+
+            String summary = apiClient.getProvider().createChatCompletion(summaryMessages);
+
+            if (summary != null && !summary.trim().isEmpty()) {
+                Msg.info(this, "LLM summarization succeeded");
+                return summary.trim();
+            }
+        } catch (Exception e) {
+            Msg.warn(this, "LLM summarization failed, using extractive fallback: " + e.getMessage());
+        }
+
+        return extractiveSummary(messagesToDiscard);
+    }
+
+    /**
+     * Build an extractive summary from discarded messages.
+     * Lists tools that were called and extracts key findings from assistant messages.
+     */
+    private String extractiveSummary(List<ChatMessage> messages) {
+        Set<String> toolNames = new java.util.LinkedHashSet<>();
+        List<String> keyFindings = new ArrayList<>();
+
+        for (ChatMessage msg : messages) {
+            // Collect tool names from tool_calls
+            if (msg.getToolCalls() != null) {
+                for (int i = 0; i < msg.getToolCalls().size(); i++) {
+                    try {
+                        JsonObject tc = msg.getToolCalls().get(i).getAsJsonObject();
+                        if (tc.has("function")) {
+                            JsonObject func = tc.getAsJsonObject("function");
+                            if (func.has("name")) {
+                                toolNames.add(func.get("name").getAsString());
+                            }
+                        }
+                    } catch (Exception ignored) {
+                    }
+                }
+            }
+
+            // Extract key findings from assistant messages
+            if (ChatMessage.ChatMessageRole.ASSISTANT.equals(msg.getRole()) && msg.getContent() != null) {
+                String content = msg.getContent().toLowerCase();
+                if (content.contains("found") || content.contains("discovered") ||
+                    content.contains("identified") || content.contains("detected") ||
+                    content.contains("result") || content.contains("analysis")) {
+                    String finding = msg.getContent();
+                    if (finding.length() > 200) {
+                        finding = finding.substring(0, 200) + "...";
+                    }
+                    keyFindings.add(finding);
+                }
+            }
+        }
+
+        StringBuilder sb = new StringBuilder();
+        if (!toolNames.isEmpty()) {
+            sb.append("Tools already used: ").append(String.join(", ", toolNames)).append("\n\n");
+        }
+        if (!keyFindings.isEmpty()) {
+            sb.append("Key findings:\n");
+            for (String finding : keyFindings) {
+                sb.append("- ").append(finding).append("\n");
+            }
+        }
+        if (sb.length() == 0) {
+            sb.append("Previous conversation contained ").append(messages.size())
+              .append(" messages that were compressed.");
+        }
+
+        Msg.info(this, "Using extractive summary fallback");
+        return sb.toString();
+    }
+
+    /**
+     * Format messages for the summarization prompt.
+     * Truncates individual messages to keep the total manageable.
+     */
+    private String formatMessagesForSummary(List<ChatMessage> messages) {
+        StringBuilder sb = new StringBuilder();
+        for (ChatMessage msg : messages) {
+            String role = msg.getRole().toString().toUpperCase();
+
+            if (ChatMessage.ChatMessageRole.ASSISTANT.equals(msg.getRole())) {
+                // Show tool calls if present
+                if (msg.getToolCalls() != null && msg.getToolCalls().size() > 0) {
+                    List<String> toolNamesList = new ArrayList<>();
+                    for (int i = 0; i < msg.getToolCalls().size(); i++) {
+                        try {
+                            JsonObject tc = msg.getToolCalls().get(i).getAsJsonObject();
+                            if (tc.has("function")) {
+                                toolNamesList.add(tc.getAsJsonObject("function").get("name").getAsString());
+                            }
+                        } catch (Exception ignored) {
+                        }
+                    }
+                    if (!toolNamesList.isEmpty()) {
+                        sb.append(role).append(": [Called tools: ")
+                          .append(String.join(", ", toolNamesList)).append("]\n");
+                    }
+                }
+                if (msg.getContent() != null && !msg.getContent().isEmpty()) {
+                    String content = msg.getContent();
+                    if (content.length() > 2000) {
+                        content = content.substring(0, 2000) + "...";
+                    }
+                    sb.append(role).append(": ").append(content).append("\n");
+                }
+            } else if (ChatMessage.ChatMessageRole.TOOL.equals(msg.getRole())) {
+                String content = msg.getContent() != null ? msg.getContent() : "";
+                if (content.length() > 500) {
+                    content = content.substring(0, 500) + "...";
+                }
+                sb.append("TOOL_RESULT: ").append(content).append("\n");
+            } else {
+                String content = msg.getContent() != null ? msg.getContent() : "";
+                if (content.length() > 2000) {
+                    content = content.substring(0, 2000) + "...";
+                }
+                sb.append(role).append(": ").append(content).append("\n");
+            }
+            sb.append("\n");
+        }
+        return sb.toString();
     }
     
     /**
      * Find a safe point to start trimming that doesn't break tool call/result pairs
      */
     private int findSafeTrimPoint() {
-        int targetSize = MAX_CONVERSATION_HISTORY - 2; // -2 for system message + first user query we always keep
+        int targetSize = Math.max(MIN_RECENT_MESSAGES, MAX_CONVERSATION_HISTORY - 2);
         int startFromEnd = Math.min(targetSize, conversationHistory.size() - 1);
         
         // Start from desired point and look backwards for a safe boundary
@@ -1576,6 +1790,37 @@ public class ConversationalToolHandler {
                     placeholder.setToolCallId(missingId);
                     conversationHistory.add(insertAt, placeholder);
                     insertAt++;
+                }
+            }
+        }
+
+        // Reverse check: find tool result messages without a matching assistant tool_call.
+        // The forward check above only validates assistant→results; this catches orphaned
+        // results that may appear after trimming or loading external history.
+        Set<String> allToolCallIds = new HashSet<>();
+        for (ChatMessage msg : conversationHistory) {
+            if (ChatMessage.ChatMessageRole.ASSISTANT.equals(msg.getRole()) && msg.getToolCalls() != null) {
+                for (int tc = 0; tc < msg.getToolCalls().size(); tc++) {
+                    JsonObject toolCall = msg.getToolCalls().get(tc).getAsJsonObject();
+                    if (toolCall.has("id")) {
+                        JsonElement idEl = toolCall.get("id");
+                        if (idEl != null && !idEl.isJsonNull() && idEl.isJsonPrimitive()) {
+                            allToolCallIds.add(idEl.getAsString());
+                        }
+                    }
+                }
+            }
+        }
+
+        // Remove tool result messages whose tool_call_id has no matching assistant tool_call
+        Iterator<ChatMessage> it = conversationHistory.iterator();
+        while (it.hasNext()) {
+            ChatMessage msg = it.next();
+            if (ChatMessage.ChatMessageRole.TOOL.equals(msg.getRole()) && msg.getToolCallId() != null) {
+                if (!allToolCallIds.contains(msg.getToolCallId())) {
+                    Msg.warn(this, "Removing orphaned tool result with tool_call_id=" + msg.getToolCallId()
+                        + " (no matching assistant tool_call found)");
+                    it.remove();
                 }
             }
         }

@@ -87,6 +87,21 @@ public class StreamingMarkdownRenderer {
     }
 
     /**
+     * Show or hide a "Thinking..." indicator in the pending area.
+     * When shown, it replaces the current pending content visually.
+     * When hidden, the pending area is cleared so real content can flow in.
+     *
+     * @param thinking true to show indicator, false to hide
+     */
+    public void setThinking(boolean thinking) {
+        String pendingHtml = thinking
+                ? "<p><em>Thinking\u2026</em></p>"
+                : "<span></span>";
+        RenderUpdate update = RenderUpdate.incremental("", pendingHtml);
+        SwingUtilities.invokeLater(() -> updateCallback.accept(update));
+    }
+
+    /**
      * Signal that the stream is complete.
      * Promotes all pending content and issues a full replace update.
      */
