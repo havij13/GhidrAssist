@@ -40,12 +40,9 @@ public class LlmApiClient {
         this.analysisDB = new AnalysisDB();
         this.plugin = plugin;
 
-        // Set timeout if not already configured
+        // Get the global API timeout and set it if the provider doesn't have one
         if (provider != null && provider.getTimeout() == null) {
-            Integer timeout = config.getTimeout();
-            if (timeout == null || timeout <= 0) {
-                timeout = 120; // Default timeout
-            }
+            Integer timeout = GhidrAssistPlugin.getGlobalApiTimeout();
             provider.setTimeout(timeout);
         }
 

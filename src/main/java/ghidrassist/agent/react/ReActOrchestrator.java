@@ -21,7 +21,6 @@ import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.function.Supplier;
 import java.util.stream.Collectors;
 
 /**
@@ -313,13 +312,6 @@ public class ReActOrchestrator {
                 AtomicInteger iteration = new AtomicInteger(0);
                 AtomicInteger toolCallCount = new AtomicInteger(0);
 
-                // Compute tool round budget based on task count
-                int initialTaskCount = todoManager.getAllTodos().size();
-                int wrapUpThreshold = initialTaskCount * 4;
-                int hardCap = initialTaskCount * 5;
-                Msg.info(this, String.format("Tool round budget: wrapUp=%d, hardCap=%d (from %d tasks)",
-                    wrapUpThreshold, hardCap, initialTaskCount));
-
                 // Main ReAct loop
                 runReActIteration(
                     query,
@@ -332,9 +324,7 @@ public class ReActOrchestrator {
                     toolCallCount,
                     handler,
                     startTime,
-                    resultFuture,
-                    wrapUpThreshold,
-                    hardCap
+                    resultFuture
                 );
 
             } catch (Exception e) {
@@ -365,9 +355,7 @@ public class ReActOrchestrator {
         AtomicInteger toolCallCount,
         ReActProgressHandler handler,
         Instant startTime,
-        CompletableFuture<ReActResult> resultFuture,
-        int wrapUpThreshold,
-        int hardCap
+        CompletableFuture<ReActResult> resultFuture
     ) {
         // Check termination conditions
         if (cancelled.get() || !handler.shouldContinue()) {
@@ -482,9 +470,7 @@ public class ReActOrchestrator {
                         handler,
                         startTime,
                         resultFuture,
-                        currentIteration,
-                        wrapUpThreshold,
-                        hardCap
+                        currentIteration
                     );
                 }
             }
@@ -504,20 +490,8 @@ public class ReActOrchestrator {
             }
         };
 
-        // Build progress context provider for compaction anchoring
-        Supplier<String> progressContextProvider = () -> {
-            StringBuilder ctx = new StringBuilder();
-            ctx.append("## Current Progress State (authoritative)\n");
-            ctx.append("### Investigation Tasks:\n").append(todoManager.formatForPrompt()).append("\n");
-            ctx.append("### Key Findings (").append(findings.getAllFindings().size()).append(" total):\n");
-            ctx.append(findings.formatForPrompt(30, 300)).append("\n");
-            ctx.append("### Directive: Continue working on task marked [->]. Do NOT re-analyze functions or addresses already covered in your findings.\n");
-            return ctx.toString();
-        };
-
-        // Call the conversational tool handler with budget thresholds
-        llmApi.sendConversationalToolRequest(prompt, tools, iterationHandler, maxToolRounds, toolRegistry,
-            progressContextProvider, wrapUpThreshold, hardCap);
+        // Call the conversational tool handler
+        llmApi.sendConversationalToolRequest(prompt, tools, iterationHandler, maxToolRounds, toolRegistry);
     }
 
     /**
@@ -610,9 +584,7 @@ public class ReActOrchestrator {
         ReActProgressHandler handler,
         Instant startTime,
         CompletableFuture<ReActResult> resultFuture,
-        int currentIteration,
-        int wrapUpThreshold,
-        int hardCap
+        int currentIteration
     ) {
         String reflectionPrompt = ReActPrompts.getReflectionPrompt(
             objective,
@@ -712,9 +684,7 @@ public class ReActOrchestrator {
                     toolCallCount,
                     handler,
                     startTime,
-                    resultFuture,
-                    wrapUpThreshold,
-                    hardCap
+                    resultFuture
                 );
             }
         }).exceptionally(error -> {
@@ -732,9 +702,7 @@ public class ReActOrchestrator {
                 toolCallCount,
                 handler,
                 startTime,
-                resultFuture,
-                wrapUpThreshold,
-                hardCap
+                resultFuture
             );
             return null;
         });
