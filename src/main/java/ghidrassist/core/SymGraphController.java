@@ -1144,6 +1144,13 @@ public class SymGraphController {
         if (node.getRegistryKeys() != null && !node.getRegistryKeys().isEmpty()) {
             nodeMap.put("registry_keys", new ArrayList<>(node.getRegistryKeys()));
         }
+        if (node.getRiskLevel() != null) {
+            nodeMap.put("risk_level", node.getRiskLevel());
+        }
+        if (node.getActivityProfile() != null) {
+            nodeMap.put("activity_profile", node.getActivityProfile());
+        }
+        nodeMap.put("analysis_depth", node.getAnalysisDepth());
 
         return nodeMap;
     }
