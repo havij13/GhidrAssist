@@ -66,9 +66,12 @@ public class SymGraphService {
                 .readTimeout(Duration.ofSeconds(TIMEOUT_SECONDS))
                 .writeTimeout(Duration.ofSeconds(TIMEOUT_SECONDS));
 
-        // Allow insecure connections for localhost and private/internal networks
+        // Allow insecure connections for localhost, private/internal networks, or when user disables TLS
+        boolean disableTls = "true".equals(
+            Preferences.getProperty("GhidrAssist.SymGraphDisableTls", "false"));
         String apiUrl = getApiUrl();
-        if (apiUrl.contains("localhost") || apiUrl.contains("127.0.0.1")
+        if (disableTls
+                || apiUrl.contains("localhost") || apiUrl.contains("127.0.0.1")
                 || apiUrl.matches(".*://10\\..*") || apiUrl.matches(".*://172\\.(1[6-9]|2[0-9]|3[01])\\..*")
                 || apiUrl.matches(".*://192\\.168\\..*")) {
             try {

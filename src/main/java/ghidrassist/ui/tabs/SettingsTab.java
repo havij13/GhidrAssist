@@ -64,6 +64,7 @@ public class SettingsTab extends JPanel {
     // SymGraph section components
     private JTextField symGraphUrlField;
     private JPasswordField symGraphKeyField;
+    private JCheckBox symGraphDisableTlsCheckbox;
     private JButton showKeyButton;
     private JButton symGraphTestButton;
     private JLabel symGraphTestStatusLabel;
@@ -179,6 +180,7 @@ public class SettingsTab extends JPanel {
         // SymGraph
         symGraphUrlField = new JTextField(30);
         symGraphKeyField = new JPasswordField(30);
+        symGraphDisableTlsCheckbox = new JCheckBox("Disable TLS Verification");
         showKeyButton = new JButton("Show");
         symGraphTestButton = new JButton("Test");
         symGraphTestStatusLabel = new JLabel();
@@ -352,6 +354,13 @@ public class SettingsTab extends JPanel {
         keyRow.add(symGraphTestButton);
         keyRow.add(symGraphTestStatusLabel);
 
+        // TLS checkbox row
+        JPanel tlsRow = new JPanel(new FlowLayout(FlowLayout.LEFT));
+        symGraphDisableTlsCheckbox.setSelected("true".equals(
+            Preferences.getProperty("GhidrAssist.SymGraphDisableTls", "false")));
+        symGraphDisableTlsCheckbox.setToolTipText("Disable TLS certificate verification for self-signed certificates");
+        tlsRow.add(symGraphDisableTlsCheckbox);
+
         // Info label
         JLabel infoLabel = new JLabel("<html><i>SymGraph provides cloud-based symbol and graph data sharing. " +
                                       "Query operations are free; push/pull require an API key.</i></html>");
@@ -361,6 +370,7 @@ public class SettingsTab extends JPanel {
 
         panel.add(urlRow);
         panel.add(keyRow);
+        panel.add(tlsRow);
         panel.add(infoRow);
 
         return panel;
@@ -475,6 +485,13 @@ public class SettingsTab extends JPanel {
                 symGraphKeyField.setEchoChar('*');
                 showKeyButton.setText("Show");
             }
+        });
+
+        // SymGraph TLS checkbox save on change
+        symGraphDisableTlsCheckbox.addActionListener(e -> {
+            Preferences.setProperty("GhidrAssist.SymGraphDisableTls",
+                String.valueOf(symGraphDisableTlsCheckbox.isSelected()));
+            Preferences.store();
         });
 
         // SymGraph URL/Key save on focus lost
@@ -1156,6 +1173,8 @@ public class SettingsTab extends JPanel {
         // Save current field values to preferences before testing
         Preferences.setProperty("GhidrAssist.SymGraphAPIUrl", symGraphUrlField.getText().trim());
         Preferences.setProperty("GhidrAssist.SymGraphAPIKey", new String(symGraphKeyField.getPassword()));
+        Preferences.setProperty("GhidrAssist.SymGraphDisableTls",
+            String.valueOf(symGraphDisableTlsCheckbox.isSelected()));
         Preferences.store();
 
         // Show testing state with Cancel button
