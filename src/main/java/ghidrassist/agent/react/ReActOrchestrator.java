@@ -438,11 +438,22 @@ public class ReActOrchestrator {
 
             @Override
             public void onComplete(String fullResponse) {
+                // Defense-in-depth: if fullResponse is just a status message (e.g. from
+                // max tool rounds), use the responseBuffer which accumulated all streamed content
+                String contentForFindings = fullResponse;
+                if (fullResponse == null || fullResponse.length() < 100 ||
+                    fullResponse.startsWith("Maximum tool")) {
+                    String buffered = responseBuffer.toString();
+                    if (!buffered.isEmpty()) {
+                        contentForFindings = buffered;
+                    }
+                }
+
                 // Extract findings from the response (keyword-based, for backwards compatibility)
-                findings.extractFromToolOutput("llm_response", fullResponse);
+                findings.extractFromToolOutput("llm_response", contentForFindings);
 
                 // Store the iteration summary (LLM's final analysis) for synthesis
-                findings.addIterationSummary(fullResponse);
+                findings.addIterationSummary(contentForFindings);
 
                 // Only mark todo complete if tools were actually executed this round
                 if (toolsExecutedThisRound) {
@@ -477,8 +488,16 @@ public class ReActOrchestrator {
 
             @Override
             public void onError(Throwable error) {
+                // Salvage any findings accumulated from tool calls before the error
+                String buffered = responseBuffer.toString();
+                if (!buffered.isEmpty()) {
+                    findings.extractFromToolOutput("llm_response", buffered);
+                    findings.addIterationSummary(buffered);
+                }
+
                 Duration duration = Duration.between(startTime, Instant.now());
-                ReActResult result = ReActResult.error(error, null, duration);
+                // Pass findings (not null) so accumulated work isn't lost
+                ReActResult result = ReActResult.error(error, findings, duration);
                 handler.onError(error);
                 handler.onComplete(result);
                 resultFuture.complete(result);
@@ -556,7 +575,8 @@ public class ReActOrchestrator {
             @Override
             public void onError(Throwable error) {
                 Duration duration = Duration.between(startTime, Instant.now());
-                ReActResult result = ReActResult.error(error, null, duration);
+                // Pass findings so accumulated work from iterations isn't lost
+                ReActResult result = ReActResult.error(error, findings, duration);
                 handler.onError(error);
                 handler.onComplete(result);
                 resultFuture.complete(result);

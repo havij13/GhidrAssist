@@ -6,6 +6,8 @@ import ghidrassist.apiprovider.OpenAIPlatformApiProvider;
 import ghidrassist.apiprovider.LMStudioProvider;
 import ghidrassist.apiprovider.ChatMessage;
 import ghidrassist.apiprovider.exceptions.RateLimitException;
+import ghidrassist.context.ContextWindowManager;
+import ghidrassist.context.ContextStatus;
 import ghidrassist.tools.api.ToolResult;
 import ghidrassist.tools.registry.ToolRegistry;
 import ghidra.util.Msg;
@@ -37,8 +39,10 @@ public class ConversationalToolHandler {
     private final LlmErrorHandler errorHandler;
     private final Runnable onCompletionCallback;
     private final ToolRegistry toolRegistry;
+    private final ContextWindowManager contextWindowManager; // nullable - for proper context management
 
     private final List<ChatMessage> conversationHistory;
+    private final StringBuilder accumulatedAssistantContent = new StringBuilder();
     private volatile boolean isConversationActive = false;
     private volatile boolean isCancelled = false;
     private int rateLimitRetries = 0;
@@ -71,6 +75,20 @@ public class ConversationalToolHandler {
             Runnable onCompletionCallback,
             int maxToolRounds,
             ToolRegistry toolRegistry) {
+        this(apiClient, functions, responseProcessor, userHandler, errorHandler, onCompletionCallback,
+            maxToolRounds, toolRegistry, null);
+    }
+
+    public ConversationalToolHandler(
+            LlmApiClient apiClient,
+            List<Map<String, Object>> functions,
+            ResponseProcessor responseProcessor,
+            LlmApi.LlmResponseHandler userHandler,
+            LlmErrorHandler errorHandler,
+            Runnable onCompletionCallback,
+            int maxToolRounds,
+            ToolRegistry toolRegistry,
+            ContextWindowManager contextWindowManager) {
 
         this.apiClient = apiClient;
         this.availableFunctions = functions;
@@ -81,6 +99,7 @@ public class ConversationalToolHandler {
         this.conversationHistory = new ArrayList<>();
         this.maxToolRounds = maxToolRounds > 0 ? maxToolRounds : 10; // Default to 10 if invalid
         this.toolRegistry = toolRegistry;
+        this.contextWindowManager = contextWindowManager;
     }
     
     /**
@@ -106,6 +125,7 @@ public class ConversationalToolHandler {
         isConversationActive = true;
         isCancelled = false; // Reset cancellation flag
         conversationHistory.clear();
+        accumulatedAssistantContent.setLength(0); // Reset content accumulator
         rateLimitRetries = 0; // Reset retry counter
         toolCallRound = 0; // Reset tool call round counter
 
@@ -148,6 +168,7 @@ public class ConversationalToolHandler {
         isConversationActive = true;
         isCancelled = false;
         conversationHistory.clear();
+        accumulatedAssistantContent.setLength(0); // Reset content accumulator
         rateLimitRetries = 0;
         toolCallRound = 0;
 
@@ -218,11 +239,17 @@ public class ConversationalToolHandler {
                 maxToolRounds
             ));
             userHandler.onUpdate(String.format(
-                "\n⚠️ **Maximum tool rounds reached (%d)** - Completing investigation with current findings.\n\n",
+                "\n**Maximum tool rounds reached (%d)** - Completing with current findings.\n\n",
                 maxToolRounds
             ));
             isConversationActive = false;
-            userHandler.onComplete("Maximum tool calling rounds reached");
+            // Pass accumulated assistant content instead of a status message,
+            // so ReAct iterations preserve actual investigation findings
+            String accumulated = accumulatedAssistantContent.toString();
+            if (accumulated.isEmpty()) {
+                accumulated = "Maximum tool calling rounds reached - no content accumulated";
+            }
+            userHandler.onComplete(accumulated);
             if (onCompletionCallback != null) {
                 onCompletionCallback.run();
             }
@@ -230,8 +257,27 @@ public class ConversationalToolHandler {
         }
 
         try {
-            // Trim conversation history to prevent token overflow
-            trimConversationHistory();
+            // Manage context window to prevent token overflow
+            if (contextWindowManager != null) {
+                try {
+                    List<ChatMessage> managed = contextWindowManager.checkAndManage(
+                        conversationHistory, availableFunctions).join();
+                    if (managed != conversationHistory) {
+                        conversationHistory.clear();
+                        conversationHistory.addAll(managed);
+                    }
+                    // Pre-flight token logging (Phase 4)
+                    ContextStatus status = contextWindowManager.getStatus(conversationHistory, availableFunctions).join();
+                    Msg.debug(this, String.format("Pre-flight: %d tokens, %d messages, %d%% used",
+                        status.getCurrentTokens(), conversationHistory.size(),
+                        status.getPercentageUsed()));
+                } catch (Exception e) {
+                    Msg.warn(this, "ContextWindowManager failed, falling back to legacy trimming: " + e.getMessage());
+                    trimConversationHistory();
+                }
+            } else {
+                trimConversationHistory(); // Legacy fallback
+            }
 
             // Validate and repair any orphaned tool_calls before sending to API
             validateAndRepairConversationHistory();
@@ -374,6 +420,10 @@ public class ConversationalToolHandler {
                 new AnthropicPlatformApiProvider.StreamingFunctionHandler() {
                     @Override
                     public void onTextUpdate(String textDelta) {
+                        // Accumulate content for max-rounds recovery
+                        if (textDelta != null) {
+                            accumulatedAssistantContent.append(textDelta);
+                        }
                         // Stream text to UI immediately
                         javax.swing.SwingUtilities.invokeLater(() -> {
                             if (!isCancelled) {
@@ -464,7 +514,20 @@ public class ConversationalToolHandler {
                         } else {
                             // Non-rate-limit errors stop the conversation
                             isConversationActive = false;
-                            userHandler.onError(error);
+
+                            // If tool calls have been executed, gracefully complete with
+                            // accumulated content instead of losing all findings
+                            if (toolCallRound > 0 && accumulatedAssistantContent.length() > 0) {
+                                Msg.warn(ConversationalToolHandler.this,
+                                    String.format("Stream error after %d tool rounds, completing with accumulated content: %s",
+                                        toolCallRound, error.getMessage()));
+                                userHandler.onUpdate(String.format(
+                                    "\n**Stream interrupted after %d tool rounds** - Completing with current findings.\n\n",
+                                    toolCallRound));
+                                userHandler.onComplete(accumulatedAssistantContent.toString());
+                            } else {
+                                userHandler.onError(error);
+                            }
 
                             if (onCompletionCallback != null) {
                                 onCompletionCallback.run();
@@ -502,6 +565,10 @@ public class ConversationalToolHandler {
                 new OpenAIPlatformApiProvider.StreamingFunctionHandler() {
                     @Override
                     public void onTextUpdate(String textDelta) {
+                        // Accumulate content for max-rounds recovery
+                        if (textDelta != null) {
+                            accumulatedAssistantContent.append(textDelta);
+                        }
                         javax.swing.SwingUtilities.invokeLater(() -> {
                             if (!isCancelled) {
                                 userHandler.onUpdate(textDelta);
@@ -587,6 +654,10 @@ public class ConversationalToolHandler {
                 new LMStudioProvider.StreamingFunctionHandler() {
                     @Override
                     public void onTextUpdate(String textDelta) {
+                        // Accumulate content for max-rounds recovery
+                        if (textDelta != null) {
+                            accumulatedAssistantContent.append(textDelta);
+                        }
                         javax.swing.SwingUtilities.invokeLater(() -> {
                             if (!isCancelled) {
                                 userHandler.onUpdate(textDelta);
@@ -685,7 +756,20 @@ public class ConversationalToolHandler {
                 });
         } else {
             isConversationActive = false;
-            userHandler.onError(error);
+
+            // If tool calls have been executed, gracefully complete with
+            // accumulated content instead of losing all findings
+            if (toolCallRound > 0 && accumulatedAssistantContent.length() > 0) {
+                Msg.warn(this, String.format(
+                    "Stream error after %d tool rounds, completing with accumulated content: %s",
+                    toolCallRound, error.getMessage()));
+                userHandler.onUpdate(String.format(
+                    "\n**Stream interrupted after %d tool rounds** - Completing with current findings.\n\n",
+                    toolCallRound));
+                userHandler.onComplete(accumulatedAssistantContent.toString());
+            } else {
+                userHandler.onError(error);
+            }
 
             if (onCompletionCallback != null) {
                 onCompletionCallback.run();
@@ -1005,6 +1089,11 @@ public class ConversationalToolHandler {
                 return;
             }
             
+            // Accumulate content for max-rounds recovery (non-streaming path)
+            if (content != null && !content.trim().isEmpty()) {
+                accumulatedAssistantContent.append(content);
+            }
+
             // Display text response if present, before tool execution metadata
             if (content != null && !content.trim().isEmpty()) {
                 String filteredContent = responseProcessor.filterThinkBlocks(content);
@@ -1014,7 +1103,7 @@ public class ConversationalToolHandler {
                     });
                 }
             }
-            
+
             // Update UI with tool calling status
             String toolExecutionHeader = "🔧 **Executing tools...**\n";
             javax.swing.SwingUtilities.invokeLater(() -> {
@@ -1216,7 +1305,12 @@ public class ConversationalToolHandler {
                     content = contentElement.getAsString();
                 }
             }
-            
+
+            // Truncate tool results via ContextWindowManager if available
+            if (contextWindowManager != null && content != null && !content.isEmpty()) {
+                content = contextWindowManager.truncateToolResult(content);
+            }
+
             // Safely extract tool_call_id
             String toolCallId = "";
             if (result.has("tool_call_id")) {
@@ -1225,7 +1319,7 @@ public class ConversationalToolHandler {
                     toolCallId = idElement.getAsString();
                 }
             }
-            
+
             ChatMessage toolMessage = new ChatMessage(ChatMessage.ChatMessageRole.TOOL, content);
             toolMessage.setToolCallId(toolCallId);
             conversationHistory.add(toolMessage);
@@ -1237,7 +1331,7 @@ public class ConversationalToolHandler {
      */
     private void handleConversationEnd(JsonObject assistantMessage) {
         isConversationActive = false;
-        
+
         try {
             // Extract and filter the final response
             String content = "";
@@ -1245,6 +1339,8 @@ public class ConversationalToolHandler {
                 JsonElement contentElement = assistantMessage.get("content");
                 if (contentElement != null && !contentElement.isJsonNull()) {
                     content = contentElement.getAsString();
+                    // Accumulate content for max-rounds recovery (non-streaming path)
+                    accumulatedAssistantContent.append(content);
                 }
             }
             

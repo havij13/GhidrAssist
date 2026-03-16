@@ -3,6 +3,9 @@ package ghidrassist;
 import ghidrassist.apiprovider.APIProviderConfig;
 import ghidrassist.apiprovider.ChatMessage;
 import ghidrassist.apiprovider.ReasoningConfig;
+import ghidrassist.context.CharacterBasedTokenCounter;
+import ghidrassist.context.ContextWindowConfig;
+import ghidrassist.context.ContextWindowManager;
 import ghidrassist.core.ConversationalToolHandler;
 import ghidrassist.core.LlmApiClient;
 import ghidrassist.core.LlmErrorHandler;
@@ -108,10 +111,14 @@ public class LlmApi {
             activeConversationalHandler = null;
         };
 
+        // Construct ContextWindowManager for proper context management
+        ContextWindowManager cwm = new ContextWindowManager(
+            new ContextWindowConfig(), new CharacterBasedTokenCounter(), this);
+
         // Create enhanced response handler for conversational tool calling
         ConversationalToolHandler toolHandler = new ConversationalToolHandler(
             apiClient, functions, responseProcessor, responseHandler, errorHandler, onCompletion,
-            maxToolRounds, toolRegistry);
+            maxToolRounds, toolRegistry, cwm);
 
         // Store reference for cancellation
         activeConversationalHandler = toolHandler;
@@ -153,10 +160,14 @@ public class LlmApi {
             activeConversationalHandler = null;
         };
 
+        // Construct ContextWindowManager for proper context management
+        ContextWindowManager cwm = new ContextWindowManager(
+            new ContextWindowConfig(), new CharacterBasedTokenCounter(), this);
+
         // Create enhanced response handler for conversational tool calling
         ConversationalToolHandler toolHandler = new ConversationalToolHandler(
             apiClient, functions, responseProcessor, responseHandler, errorHandler, onCompletion,
-            maxToolRounds, toolRegistry);
+            maxToolRounds, toolRegistry, cwm);
 
         // Store reference for cancellation
         activeConversationalHandler = toolHandler;
