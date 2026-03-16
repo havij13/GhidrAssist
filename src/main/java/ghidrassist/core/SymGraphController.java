@@ -2,6 +2,7 @@ package ghidrassist.core;
 
 import ghidra.program.model.address.Address;
 import ghidra.program.model.listing.Function;
+import ghidra.program.model.listing.FunctionIterator;
 import ghidra.program.model.listing.Program;
 import ghidra.util.Msg;
 import ghidra.util.task.Task;
@@ -38,6 +39,7 @@ public class SymGraphController {
     private SymGraphTab symGraphTab;
     private SymGraphApplyWorker applyWorker;
     private SymGraphPullWorker pullWorker;
+    private Map<String, Long> externalAddressMap;
 
     public SymGraphController(GhidrAssistPlugin plugin, AnalysisDB analysisDB) {
         this.plugin = plugin;
@@ -1021,6 +1023,9 @@ public class SymGraphController {
             return null;
         }
 
+        // Build PLT/thunk address map for external functions
+        externalAddressMap = buildExternalAddressMap();
+
         List<Map<String, Object>> nodes = new ArrayList<>();
         List<Map<String, Object>> edges = new ArrayList<>();
 
@@ -1077,11 +1082,15 @@ public class SymGraphController {
                     KnowledgeNode targetNode = nodeCache.get(edge.getTargetId());
 
                     if (sourceNode != null && targetNode != null) {
+                        // Resolve PLT addresses for externals
+                        Long srcResolved = sourceNode.getAddress() != null ? sourceNode.getAddress() : resolveExternalAddress(sourceNode.getName());
+                        Long tgtResolved = targetNode.getAddress() != null ? targetNode.getAddress() : resolveExternalAddress(targetNode.getName());
+
                         Map<String, Object> edgeMap = new HashMap<>();
-                        edgeMap.put("source_address", sourceNode.getAddress() != null ?
-                            String.format("0x%x", sourceNode.getAddress()) : "0x0");
-                        edgeMap.put("target_address", targetNode.getAddress() != null ?
-                            String.format("0x%x", targetNode.getAddress()) : "0x0");
+                        edgeMap.put("source_address", srcResolved != null ? String.format("0x%x", srcResolved) : "0x0");
+                        edgeMap.put("target_address", tgtResolved != null ? String.format("0x%x", tgtResolved) : "0x0");
+                        edgeMap.put("source_name", sourceNode.getName());
+                        edgeMap.put("target_name", targetNode.getName());
                         edgeMap.put("edge_type", edge.getType().name().toLowerCase());
                         edgeMap.put("weight", edge.getWeight());
                         edges.add(edgeMap);
@@ -1110,9 +1119,10 @@ public class SymGraphController {
      */
     private Map<String, Object> nodeToExportMap(KnowledgeNode node) {
         Map<String, Object> nodeMap = new HashMap<>();
-        nodeMap.put("address", node.getAddress() != null ?
-            String.format("0x%x", node.getAddress()) : "0x0");
-        nodeMap.put("node_type", node.getType().name().toLowerCase());
+        // Use PLT address for externals without real addresses
+        Long resolved = node.getAddress() != null ? node.getAddress() : resolveExternalAddress(node.getName());
+        nodeMap.put("address", resolved != null ? String.format("0x%x", resolved) : "0x0");
+        nodeMap.put("node_type", node.getAddress() != null ? node.getType().name().toLowerCase() : "external");
         nodeMap.put("name", node.getName());
         nodeMap.put("raw_content", node.getRawContent());
         nodeMap.put("llm_summary", node.getLlmSummary());
@@ -1153,6 +1163,41 @@ public class SymGraphController {
         nodeMap.put("analysis_depth", node.getAnalysisDepth());
 
         return nodeMap;
+    }
+
+    /**
+     * Build a map of external function names to their PLT/thunk stub addresses.
+     * Ghidra's thunk functions (PLT stubs) point to external functions but have
+     * real addresses in the binary's address space.
+     */
+    private Map<String, Long> buildExternalAddressMap() {
+        Map<String, Long> map = new HashMap<>();
+        Program program = plugin.getCurrentProgram();
+        if (program == null) return map;
+
+        FunctionIterator funcIter = program.getFunctionManager().getFunctions(true);
+        while (funcIter.hasNext()) {
+            Function func = funcIter.next();
+            if (func.isThunk()) {
+                Function thunked = func.getThunkedFunction(true);
+                if (thunked != null && thunked.isExternal()) {
+                    map.putIfAbsent(thunked.getName(), func.getEntryPoint().getOffset());
+                }
+            }
+        }
+        Msg.info(this, "Resolved " + map.size() + " external function PLT addresses");
+        return map;
+    }
+
+    /**
+     * Resolve address for an external function.
+     * Returns the PLT/thunk stub address if available, null otherwise.
+     */
+    private Long resolveExternalAddress(String name) {
+        if (externalAddressMap != null && externalAddressMap.containsKey(name)) {
+            return externalAddressMap.get(name);
+        }
+        return null; // Server handles dedup by name for address-0 external nodes
     }
 
     /**
