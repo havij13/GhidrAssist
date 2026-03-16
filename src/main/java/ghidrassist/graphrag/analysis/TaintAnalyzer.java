@@ -932,13 +932,28 @@ public class TaintAnalyzer {
                 continue;
             }
 
-            // Check callees for network send functions
-            for (KnowledgeNode callee : graph.getCallees(node.getId())) {
-                if (callee.getName() != null && isNetworkSendAPI(callee.getName())) {
-                    if (seenIds.add(node.getId())) {
-                        sendNodes.add(node);
+            // Check pre-extracted network APIs from SecurityFeatureExtractor
+            List<String> netAPIs = node.getNetworkAPIs();
+            if (netAPIs != null && !seenIds.contains(node.getId())) {
+                for (String api : netAPIs) {
+                    if (isNetworkSendAPI(api)) {
+                        if (seenIds.add(node.getId())) {
+                            sendNodes.add(node);
+                        }
+                        break;
                     }
-                    break;
+                }
+            }
+
+            // Check callees for network send functions
+            if (!seenIds.contains(node.getId())) {
+                for (KnowledgeNode callee : graph.getCallees(node.getId())) {
+                    if (callee.getName() != null && isNetworkSendAPI(callee.getName())) {
+                        if (seenIds.add(node.getId())) {
+                            sendNodes.add(node);
+                        }
+                        break;
+                    }
                 }
             }
         }
@@ -960,6 +975,8 @@ public class TaintAnalyzer {
         List<KnowledgeNode> allFunctions = graph.getNodesByType(NodeType.FUNCTION);
         Msg.info(this, String.format("Scanning %d function nodes for recv APIs...", allFunctions.size()));
 
+        int foundByNetAPIs = 0;
+
         for (KnowledgeNode node : allFunctions) {
             totalFunctions++;
             String name = node.getName();
@@ -975,25 +992,45 @@ public class TaintAnalyzer {
                 continue;
             }
 
-            // Check callees for network recv functions
-            List<KnowledgeNode> callees = graph.getCallees(node.getId());
-            for (KnowledgeNode callee : callees) {
-                String calleeName = callee.getName();
-                if (calleeName != null && isNetworkRecvAPI(calleeName)) {
-                    if (seenIds.add(node.getId())) {
-                        recvNodes.add(node);
-                        foundByCallee++;
-                        Msg.info(this, String.format("Found function calling recv API: '%s' calls '%s' (normalized: '%s')",
-                                name != null ? name : "sub_" + Long.toHexString(node.getAddress()),
-                                calleeName, normalizeFunctionName(calleeName)));
+            // Check pre-extracted network APIs from SecurityFeatureExtractor
+            if (!seenIds.contains(node.getId())) {
+                List<String> netAPIs = node.getNetworkAPIs();
+                if (netAPIs != null) {
+                    for (String api : netAPIs) {
+                        if (isNetworkRecvAPI(api)) {
+                            if (seenIds.add(node.getId())) {
+                                recvNodes.add(node);
+                                foundByNetAPIs++;
+                                Msg.info(this, String.format("Found recv API by pre-extracted networkAPIs: '%s' has API '%s'",
+                                        name != null ? name : "sub_" + Long.toHexString(node.getAddress()), api));
+                            }
+                            break;
+                        }
                     }
-                    break;
+                }
+            }
+
+            // Check callees for network recv functions
+            if (!seenIds.contains(node.getId())) {
+                List<KnowledgeNode> callees = graph.getCallees(node.getId());
+                for (KnowledgeNode callee : callees) {
+                    String calleeName = callee.getName();
+                    if (calleeName != null && isNetworkRecvAPI(calleeName)) {
+                        if (seenIds.add(node.getId())) {
+                            recvNodes.add(node);
+                            foundByCallee++;
+                            Msg.info(this, String.format("Found function calling recv API: '%s' calls '%s' (normalized: '%s')",
+                                    name != null ? name : "sub_" + Long.toHexString(node.getAddress()),
+                                    calleeName, normalizeFunctionName(calleeName)));
+                        }
+                        break;
+                    }
                 }
             }
         }
 
-        Msg.info(this, String.format("Recv nodes breakdown: %d by API name, %d by callee match (scanned %d functions)",
-                foundByName, foundByCallee, totalFunctions));
+        Msg.info(this, String.format("Recv nodes breakdown: %d by API name, %d by pre-extracted networkAPIs, %d by callee match (scanned %d functions)",
+                foundByName, foundByNetAPIs, foundByCallee, totalFunctions));
         return recvNodes;
     }
 

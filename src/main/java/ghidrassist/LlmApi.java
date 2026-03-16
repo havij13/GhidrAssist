@@ -12,6 +12,7 @@ import ghidrassist.tools.registry.ToolRegistry;
 
 import java.util.List;
 import java.util.Map;
+import java.util.function.Supplier;
 
 /**
  * - LlmApiClient: Provider management and API calls
@@ -112,6 +113,52 @@ public class LlmApi {
         ConversationalToolHandler toolHandler = new ConversationalToolHandler(
             apiClient, functions, responseProcessor, responseHandler, errorHandler, onCompletion,
             maxToolRounds, toolRegistry);
+
+        // Store reference for cancellation
+        activeConversationalHandler = toolHandler;
+
+        // Start the conversation
+        toolHandler.startConversation(prompt);
+    }
+
+    /**
+     * Send a conversational tool calling request with progress context and budget thresholds.
+     *
+     * @param progressContextProvider Supplies structured progress state for compaction anchoring
+     * @param wrapUpThreshold Tool round at which to insist the agent compile results (-1 to disable)
+     * @param hardCap Absolute tool round limit (-1 to use maxToolRounds)
+     */
+    public void sendConversationalToolRequest(String prompt, List<Map<String, Object>> functions,
+            LlmResponseHandler responseHandler, int maxToolRounds, ToolRegistry toolRegistry,
+            Supplier<String> progressContextProvider, int wrapUpThreshold, int hardCap) {
+        if (!apiClient.isProviderAvailable()) {
+            errorHandler.handleError(
+                new IllegalStateException("LLM provider is not initialized."),
+                "send conversational tool request",
+                null
+            );
+            return;
+        }
+
+        // Create completion callback to clear reference
+        Runnable onCompletion = () -> {
+            activeConversationalHandler = null;
+        };
+
+        // Create enhanced response handler for conversational tool calling
+        ConversationalToolHandler toolHandler = new ConversationalToolHandler(
+            apiClient, functions, responseProcessor, responseHandler, errorHandler, onCompletion,
+            maxToolRounds, toolRegistry);
+
+        // Set progress context provider for compaction anchoring
+        if (progressContextProvider != null) {
+            toolHandler.setProgressContextProvider(progressContextProvider);
+        }
+
+        // Set tool round budget thresholds
+        if (wrapUpThreshold > 0 || hardCap > 0) {
+            toolHandler.setToolRoundBudget(wrapUpThreshold, hardCap);
+        }
 
         // Store reference for cancellation
         activeConversationalHandler = toolHandler;

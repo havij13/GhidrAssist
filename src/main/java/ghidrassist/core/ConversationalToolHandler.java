@@ -22,6 +22,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
+import java.util.function.Supplier;
 
 /**
  * Handles conversational tool calling with proper finish_reason monitoring.
@@ -38,29 +39,50 @@ public class ConversationalToolHandler {
     private final Runnable onCompletionCallback;
     private final ToolRegistry toolRegistry;
 
+    private Supplier<String> progressContextProvider;
+    private int compactionCount = 0; // Track how many times history has been compacted
+    private static final int COMPACTION_NUDGE_INTERVAL = 3; // Nudge every N compactions
+
     private final List<ChatMessage> conversationHistory;
     private volatile boolean isConversationActive = false;
     private volatile boolean isCancelled = false;
     private int rateLimitRetries = 0;
     private int toolCallRound = 0; // Track tool calling rounds within iteration
     private static final int MAX_RATE_LIMIT_BACKOFF_SECONDS = 60;
-    private static final int MAX_CONVERSATION_HISTORY = 40; // Safety net message count cap
-    private static final int MAX_CONVERSATION_CHARS = 600000; // ~150K tokens at 4 chars/token
-    private static final double COMPRESSION_THRESHOLD = 0.75; // Trigger compression at 75% of char limit
-    private static final int MIN_RECENT_MESSAGES = 8; // Always keep last 8 messages
+    private static final int MAX_CONVERSATION_HISTORY = 40; // Keep last 40 messages to prevent token overflow
+    private static final int COMPACT_KEEP_RECENT = 15; // Keep this many recent messages after compaction
     private final int maxToolRounds; // Maximum tool calling rounds per iteration (configurable)
+    private int wrapUpThreshold = -1;  // Tool round at which to insist on wrapping up (-1 = disabled)
+    private int hardCapRounds = -1;    // Absolute tool round limit (-1 = disabled, uses maxToolRounds)
+    private boolean wrapUpInjected = false; // Track whether wrap-up message has been injected
     private static final int API_TIMEOUT_SECONDS = 300; // Timeout for blocking API calls (generous for rate limit retries)
 
-    private static final String SUMMARY_PROMPT = "Summarize the following investigation conversation concisely.\n\n" +
-        "Preserve these key elements:\n" +
-        "- Important discoveries and findings\n" +
-        "- Tools that were used and their significant results\n" +
-        "- Current investigation progress and state\n" +
-        "- Any identified patterns, vulnerabilities, or issues\n" +
-        "- Key addresses, function names, or code references mentioned\n\n" +
-        "Previous conversation to summarize:\n%s\n\n" +
-        "Provide a concise summary (target: ~500 words) that captures the essential context " +
-        "needed to continue this investigation effectively. Focus on facts and findings, not the conversation flow.";
+    private static final String COMPACTION_PROMPT = """
+        You are summarizing the earlier portion of a reverse engineering investigation. \
+        This summary will replace the original messages, so it must capture all essential \
+        context needed to continue the investigation without re-doing work.
+
+        Summarize the following conversation concisely. Preserve:
+
+        1. **Tools called and key results** - Which tools were invoked (with addresses/function names) \
+        and what significant information was returned. Include specific addresses, function names, \
+        symbol names, and string values discovered.
+        2. **Findings and decisions** - What was discovered, concluded, or decided. Note any \
+        vulnerabilities, patterns, suspicious behaviors, or structural insights.
+        3. **Investigation state** - What has been completed, what is still pending, and the agent's \
+        current reasoning direction.
+        4. **Key code references** - Preserve specific addresses (0x...), function names, variable \
+        names, and cross-references.
+
+        Be factual and dense. No meta-commentary. Target 300-500 words.
+
+        ---
+
+        %s
+
+        ---
+
+        Concise investigation summary:""";
 
     public ConversationalToolHandler(
             LlmApiClient apiClient,
@@ -82,7 +104,26 @@ public class ConversationalToolHandler {
         this.maxToolRounds = maxToolRounds > 0 ? maxToolRounds : 10; // Default to 10 if invalid
         this.toolRegistry = toolRegistry;
     }
-    
+
+    /**
+     * Set a provider that supplies structured progress state for compaction anchoring.
+     * When conversation history is compacted, this state is appended to the LLM summary
+     * to prevent the agent from losing track of completed work.
+     */
+    public void setProgressContextProvider(Supplier<String> provider) {
+        this.progressContextProvider = provider;
+    }
+
+    /**
+     * Set tool round budget thresholds based on investigation scope.
+     * @param wrapUpAt  Tool round at which to inject an insistent wrap-up message
+     * @param hardCapAt Absolute tool round limit (forces completion)
+     */
+    public void setToolRoundBudget(int wrapUpAt, int hardCapAt) {
+        this.wrapUpThreshold = wrapUpAt;
+        this.hardCapRounds = hardCapAt;
+    }
+
     /**
      * Start the conversational tool calling session
      */
@@ -204,29 +245,44 @@ public class ConversationalToolHandler {
     
     /**
      * Continue the conversation with the current message history.
-     * Supports multi-turn tool calling with safety limit (max 10 rounds per iteration).
+     * Supports multi-turn tool calling with safety limit.
      */
     private void continueConversation() {
         if (!isConversationActive || isCancelled) {
             return;
         }
 
-        // Check tool calling round limit (safety mechanism for infinite loops)
-        if (toolCallRound >= maxToolRounds) {
+        // Check hard cap first (absolute limit based on investigation scope)
+        int effectiveHardCap = hardCapRounds > 0 ? hardCapRounds : maxToolRounds;
+        if (toolCallRound >= effectiveHardCap) {
             Msg.warn(this, String.format(
-                "Reached maximum tool calling rounds (%d). Completing conversation to prevent infinite loops.",
-                maxToolRounds
+                "Reached hard cap on tool rounds (%d/%d). Forcing completion.",
+                toolCallRound, effectiveHardCap
             ));
             userHandler.onUpdate(String.format(
-                "\n⚠️ **Maximum tool rounds reached (%d)** - Completing investigation with current findings.\n\n",
-                maxToolRounds
+                "\n⚠️ **Hard cap reached (%d tool rounds)** - Completing investigation with current findings.\n\n",
+                effectiveHardCap
             ));
             isConversationActive = false;
-            userHandler.onComplete("Maximum tool calling rounds reached");
+            userHandler.onComplete("Hard cap on tool calling rounds reached");
             if (onCompletionCallback != null) {
                 onCompletionCallback.run();
             }
             return;
+        }
+
+        // At wrap-up threshold, inject an insistent message to compile results
+        if (wrapUpThreshold > 0 && toolCallRound >= wrapUpThreshold && !wrapUpInjected) {
+            wrapUpInjected = true;
+            String wrapUpMsg = "**⚠️ WRAP-UP REQUIRED (tool round " + toolCallRound + "/" + effectiveHardCap + "):**\n"
+                + "You have used " + toolCallRound + " of " + effectiveHardCap + " allowed tool rounds. "
+                + "You MUST now compile your final results and complete the current investigation task. "
+                + "Do NOT start analyzing new functions. Summarize what you have found so far and "
+                + "produce your final output for the current task. The investigation will be forcibly "
+                + "terminated at " + effectiveHardCap + " rounds.";
+            conversationHistory.add(new ChatMessage(ChatMessage.ChatMessageRole.USER, wrapUpMsg));
+            userHandler.onUpdate("\n⚠️ **Wrap-up threshold reached** - Instructing agent to compile final results.\n\n");
+            Msg.info(this, "Injected wrap-up message at tool round " + toolCallRound);
         }
 
         try {
@@ -1376,319 +1432,261 @@ public class ConversationalToolHandler {
     
     /**
      * Trim conversation history to prevent token overflow.
-     * Uses LLM-based summarization (with extractive fallback) to preserve context
-     * about which tools were called and what was found, preventing infinite tool loops.
+     * Uses LLM-based compaction with progress state anchoring.
      */
     private void trimConversationHistory() {
-        long totalChars = estimateTotalChars();
-        boolean charThresholdExceeded = totalChars >= (long)(MAX_CONVERSATION_CHARS * COMPRESSION_THRESHOLD);
-        boolean messageCountExceeded = conversationHistory.size() > MAX_CONVERSATION_HISTORY;
-
-        if (!charThresholdExceeded && !messageCountExceeded) {
+        if (conversationHistory.size() <= MAX_CONVERSATION_HISTORY) {
             return; // No trimming needed
         }
 
-        Msg.info(this, String.format("Context compression triggered: ~%d chars, %d messages",
-            totalChars, conversationHistory.size()));
+        List<ChatMessage> trimmedHistory = new ArrayList<>();
 
-        // Identify beginning messages to always keep: system + first user query
-        List<ChatMessage> beginning = new ArrayList<>();
-        int firstUserIndex = -1;
-        if (!conversationHistory.isEmpty()) {
-            beginning.add(conversationHistory.get(0)); // System message
-            for (int i = 1; i < conversationHistory.size(); i++) {
-                if (ChatMessage.ChatMessageRole.USER.equals(conversationHistory.get(i).getRole())) {
-                    beginning.add(conversationHistory.get(i));
-                    firstUserIndex = i;
-                    break;
-                }
+        // Always keep the system message (index 0)
+        if (conversationHistory.isEmpty()) {
+            return;
+        }
+        trimmedHistory.add(conversationHistory.get(0));  // System message
+
+        // Find and keep the first USER message (the original query)
+        int firstUserMsgIndex = -1;
+        for (int i = 1; i < conversationHistory.size(); i++) {
+            ChatMessage msg = conversationHistory.get(i);
+            if (ChatMessage.ChatMessageRole.USER.equals(msg.getRole())) {
+                trimmedHistory.add(msg);
+                firstUserMsgIndex = i;
+                break;
             }
         }
 
-        // Find safe trim point for recent messages to keep
+        // Find a safe cutoff point that doesn't break tool call/result pairs
         int safeStartIndex = findSafeTrimPoint();
-        // Ensure we keep at least MIN_RECENT_MESSAGES
-        int minStartIndex = Math.max(0, conversationHistory.size() - MIN_RECENT_MESSAGES);
-        if (safeStartIndex > minStartIndex) {
-            // findSafeTrimPoint may return a point that keeps fewer messages than MIN_RECENT_MESSAGES;
-            // walk backwards from minStartIndex to find a safe point
-            for (int i = minStartIndex; i >= 0; i--) {
-                if (isSafeTrimPoint(i)) {
-                    safeStartIndex = i;
-                    break;
+
+        // Identify dropped messages: between first user message and safe trim point
+        int dropStart = (firstUserMsgIndex >= 0) ? firstUserMsgIndex + 1 : 1;
+        if (dropStart < safeStartIndex) {
+            List<ChatMessage> droppedMessages = new ArrayList<>(
+                conversationHistory.subList(dropStart, safeStartIndex));
+
+            // Attempt to compact dropped messages into a summary
+            ChatMessage summary = generateCompactionSummary(droppedMessages);
+            if (summary != null) {
+                // Append authoritative progress state if provider is available
+                if (progressContextProvider != null) {
+                    try {
+                        String progressState = progressContextProvider.get();
+                        if (progressState != null && !progressState.isEmpty()) {
+                            summary.setContent(summary.getContent().replace(
+                                "[End of Summary - Continue from the messages below]",
+                                progressState + "\n\n[End of Summary - Continue from the messages below]"));
+                        }
+                    } catch (Exception e) {
+                        Msg.warn(this, "Failed to get progress context: " + e.getMessage());
+                    }
                 }
+                trimmedHistory.add(summary);
+                Msg.info(this, String.format(
+                    "Compacted %d dropped messages into summary (%d chars)",
+                    droppedMessages.size(), summary.getContent().length()));
+            } else {
+                Msg.info(this, String.format(
+                    "Dropping %d messages without summary", droppedMessages.size()));
             }
         }
 
-        // Collect messages to discard (between beginning and recent kept)
-        int discardStart = (firstUserIndex >= 0) ? firstUserIndex + 1 : 1;
-        List<ChatMessage> messagesToDiscard = new ArrayList<>();
-        for (int i = discardStart; i < safeStartIndex; i++) {
-            messagesToDiscard.add(conversationHistory.get(i));
-        }
-
-        if (messagesToDiscard.isEmpty()) {
-            return; // Nothing to summarize
-        }
-
-        // Generate summary of discarded messages
-        String summary = generateSummary(messagesToDiscard);
-
-        // Rebuild history: beginning + summary + recent messages
-        List<ChatMessage> trimmedHistory = new ArrayList<>(beginning);
-
-        // Insert summary as a USER message
-        ChatMessage summaryMessage = new ChatMessage(ChatMessage.ChatMessageRole.USER,
-            "[Previous Investigation Summary]\n\n" + summary + "\n\n[End of Summary - Continuing Investigation]");
-        trimmedHistory.add(summaryMessage);
-
-        // Add recent messages from safe point to end
+        // Add messages from safe point to end
         for (int i = safeStartIndex; i < conversationHistory.size(); i++) {
             trimmedHistory.add(conversationHistory.get(i));
+        }
+
+        // Track compaction events and inject periodic nudge
+        compactionCount++;
+        Msg.info(this, String.format("Compaction #%d (tool round %d/%d)", compactionCount, toolCallRound, maxToolRounds));
+
+        if (compactionCount % COMPACTION_NUDGE_INTERVAL == 0 && progressContextProvider != null) {
+            // Every Nth compaction, inject a nudge to refocus the agent
+            try {
+                String progressState = progressContextProvider.get();
+                String nudge = "**PROGRESS CHECK (compaction #" + compactionCount + ", tool round " + toolCallRound + "/" + maxToolRounds + "):**\n"
+                    + "You have been working for a while. Review your task list and findings below.\n"
+                    + "If the current task is sufficiently investigated, mark it complete and move to the NEXT task.\n"
+                    + "Do NOT re-analyze functions or addresses already covered in your findings.\n";
+                if (progressState != null && !progressState.isEmpty()) {
+                    nudge += "\n" + progressState;
+                }
+                trimmedHistory.add(new ChatMessage(ChatMessage.ChatMessageRole.USER, nudge));
+                Msg.info(this, "Injected compaction nudge at compaction #" + compactionCount);
+            } catch (Exception e) {
+                Msg.warn(this, "Failed to inject compaction nudge: " + e.getMessage());
+            }
         }
 
         // Replace conversation history
         conversationHistory.clear();
         conversationHistory.addAll(trimmedHistory);
 
-        Msg.info(this, String.format("Context compressed: %d messages, ~%d chars (summarized %d messages)",
-            conversationHistory.size(), estimateTotalChars(), messagesToDiscard.size()));
+        Msg.info(this, String.format("Trimmed conversation history to %d messages (safe tool-call trimming)",
+            conversationHistory.size()));
     }
 
     /**
-     * Estimate total character count across all messages in the conversation.
+     * Serialize a list of ChatMessages into human-readable text for the compaction prompt.
      */
-    private long estimateTotalChars() {
-        long total = 0;
-        for (ChatMessage msg : conversationHistory) {
-            if (msg.getContent() != null) {
-                total += msg.getContent().length();
-            }
-            if (msg.getToolCalls() != null) {
-                total += msg.getToolCalls().toString().length();
-            }
-        }
-        return total;
-    }
-
-    /**
-     * Generate a summary of discarded messages using LLM-based summarization.
-     * Falls back to extractive summary on failure.
-     */
-    private String generateSummary(List<ChatMessage> messagesToDiscard) {
-        String formattedConversation = formatMessagesForSummary(messagesToDiscard);
-
-        // Truncate to 40000 chars before sending to summarizer
-        if (formattedConversation.length() > 40000) {
-            formattedConversation = formattedConversation.substring(0, 40000) + "\n[... truncated ...]";
-        }
-
-        try {
-            String prompt = String.format(SUMMARY_PROMPT, formattedConversation);
-            List<ChatMessage> summaryMessages = new ArrayList<>();
-            summaryMessages.add(new ChatMessage(ChatMessage.ChatMessageRole.USER, prompt));
-
-            String summary = apiClient.getProvider().createChatCompletion(summaryMessages);
-
-            if (summary != null && !summary.trim().isEmpty()) {
-                Msg.info(this, "LLM summarization succeeded");
-                return summary.trim();
-            }
-        } catch (Exception e) {
-            Msg.warn(this, "LLM summarization failed, using extractive fallback: " + e.getMessage());
-        }
-
-        return extractiveSummary(messagesToDiscard);
-    }
-
-    /**
-     * Build an extractive summary from discarded messages.
-     * Lists tools that were called and extracts key findings from assistant messages.
-     */
-    private String extractiveSummary(List<ChatMessage> messages) {
-        Set<String> toolNames = new java.util.LinkedHashSet<>();
-        List<String> keyFindings = new ArrayList<>();
+    private String serializeMessagesForCompaction(List<ChatMessage> messages) {
+        StringBuilder sb = new StringBuilder();
 
         for (ChatMessage msg : messages) {
-            // Collect tool names from tool_calls
-            if (msg.getToolCalls() != null) {
-                for (int i = 0; i < msg.getToolCalls().size(); i++) {
-                    try {
-                        JsonObject tc = msg.getToolCalls().get(i).getAsJsonObject();
-                        if (tc.has("function")) {
-                            JsonObject func = tc.getAsJsonObject("function");
-                            if (func.has("name")) {
-                                toolNames.add(func.get("name").getAsString());
-                            }
-                        }
-                    } catch (Exception ignored) {
-                    }
+            String role = msg.getRole();
+
+            if (ChatMessage.ChatMessageRole.ASSISTANT.equals(role)) {
+                sb.append("ASSISTANT: ");
+                if (msg.getContent() != null && !msg.getContent().isEmpty()) {
+                    sb.append(truncate(msg.getContent(), 1500));
                 }
-            }
-
-            // Extract key findings from assistant messages
-            if (ChatMessage.ChatMessageRole.ASSISTANT.equals(msg.getRole()) && msg.getContent() != null) {
-                String content = msg.getContent().toLowerCase();
-                if (content.contains("found") || content.contains("discovered") ||
-                    content.contains("identified") || content.contains("detected") ||
-                    content.contains("result") || content.contains("analysis")) {
-                    String finding = msg.getContent();
-                    if (finding.length() > 200) {
-                        finding = finding.substring(0, 200) + "...";
-                    }
-                    keyFindings.add(finding);
-                }
-            }
-        }
-
-        StringBuilder sb = new StringBuilder();
-        if (!toolNames.isEmpty()) {
-            sb.append("Tools already used: ").append(String.join(", ", toolNames)).append("\n\n");
-        }
-        if (!keyFindings.isEmpty()) {
-            sb.append("Key findings:\n");
-            for (String finding : keyFindings) {
-                sb.append("- ").append(finding).append("\n");
-            }
-        }
-        if (sb.length() == 0) {
-            sb.append("Previous conversation contained ").append(messages.size())
-              .append(" messages that were compressed.");
-        }
-
-        Msg.info(this, "Using extractive summary fallback");
-        return sb.toString();
-    }
-
-    /**
-     * Format messages for the summarization prompt.
-     * Truncates individual messages to keep the total manageable.
-     */
-    private String formatMessagesForSummary(List<ChatMessage> messages) {
-        StringBuilder sb = new StringBuilder();
-        for (ChatMessage msg : messages) {
-            String role = msg.getRole().toString().toUpperCase();
-
-            if (ChatMessage.ChatMessageRole.ASSISTANT.equals(msg.getRole())) {
-                // Show tool calls if present
+                // Append tool call info
                 if (msg.getToolCalls() != null && msg.getToolCalls().size() > 0) {
-                    List<String> toolNamesList = new ArrayList<>();
                     for (int i = 0; i < msg.getToolCalls().size(); i++) {
                         try {
                             JsonObject tc = msg.getToolCalls().get(i).getAsJsonObject();
-                            if (tc.has("function")) {
-                                toolNamesList.add(tc.getAsJsonObject("function").get("name").getAsString());
+                            String toolName;
+                            try {
+                                toolName = extractToolName(tc);
+                            } catch (Exception e) {
+                                toolName = "unknown_tool";
                             }
-                        } catch (Exception ignored) {
+                            String args = "";
+                            try {
+                                JsonObject argObj = extractToolArguments(tc);
+                                args = truncate(argObj.toString(), 200);
+                            } catch (Exception e) {
+                                // ignore
+                            }
+                            sb.append("\n  -> TOOL CALL: ").append(toolName);
+                            if (!args.isEmpty()) {
+                                sb.append("(").append(args).append(")");
+                            }
+                        } catch (Exception e) {
+                            // skip malformed tool call
                         }
                     }
-                    if (!toolNamesList.isEmpty()) {
-                        sb.append(role).append(": [Called tools: ")
-                          .append(String.join(", ", toolNamesList)).append("]\n");
-                    }
                 }
-                if (msg.getContent() != null && !msg.getContent().isEmpty()) {
-                    String content = msg.getContent();
-                    if (content.length() > 2000) {
-                        content = content.substring(0, 2000) + "...";
-                    }
-                    sb.append(role).append(": ").append(content).append("\n");
+                sb.append("\n\n");
+
+            } else if (ChatMessage.ChatMessageRole.TOOL.equals(role)) {
+                sb.append("TOOL RESULT");
+                if (msg.getToolCallId() != null) {
+                    sb.append(" [").append(msg.getToolCallId()).append("]");
                 }
-            } else if (ChatMessage.ChatMessageRole.TOOL.equals(msg.getRole())) {
-                String content = msg.getContent() != null ? msg.getContent() : "";
-                if (content.length() > 500) {
-                    content = content.substring(0, 500) + "...";
-                }
-                sb.append("TOOL_RESULT: ").append(content).append("\n");
+                sb.append(": ");
+                sb.append(truncate(msg.getContent() != null ? msg.getContent() : "", 800));
+                sb.append("\n\n");
+
+            } else if (ChatMessage.ChatMessageRole.USER.equals(role)) {
+                sb.append("USER: ");
+                sb.append(truncate(msg.getContent() != null ? msg.getContent() : "", 1000));
+                sb.append("\n\n");
+
             } else {
-                String content = msg.getContent() != null ? msg.getContent() : "";
-                if (content.length() > 2000) {
-                    content = content.substring(0, 2000) + "...";
-                }
-                sb.append(role).append(": ").append(content).append("\n");
+                // Other roles (system, function, etc.)
+                sb.append(role.toUpperCase()).append(": ");
+                sb.append(truncate(msg.getContent() != null ? msg.getContent() : "", 500));
+                sb.append("\n\n");
             }
-            sb.append("\n");
         }
-        return sb.toString();
+
+        String result = sb.toString();
+        // Cap total serialized text at 25000 chars, keeping most recent portion
+        if (result.length() > 25000) {
+            result = result.substring(result.length() - 25000);
+        }
+        return result;
     }
-    
+
+    /**
+     * Generate a compaction summary of dropped messages using the LLM.
+     * Returns a USER-role ChatMessage with the summary, or null on failure.
+     */
+    private ChatMessage generateCompactionSummary(List<ChatMessage> droppedMessages) {
+        try {
+            String serialized = serializeMessagesForCompaction(droppedMessages);
+
+            // Skip if nothing meaningful to summarize
+            if (serialized.length() < 100) {
+                return null;
+            }
+
+            String prompt = String.format(COMPACTION_PROMPT, serialized);
+
+            List<ChatMessage> compactionMessages = new ArrayList<>();
+            compactionMessages.add(new ChatMessage(ChatMessage.ChatMessageRole.USER, prompt));
+
+            String summaryText = apiClient.getProvider().createChatCompletion(compactionMessages);
+
+            if (summaryText == null || summaryText.trim().isEmpty()) {
+                Msg.warn(this, "Compaction LLM call returned empty response");
+                return null;
+            }
+
+            String wrappedSummary = "[Previous Investigation Summary]\n\n"
+                + summaryText.trim()
+                + "\n\n[End of Summary - Continue from the messages below]";
+
+            return new ChatMessage(ChatMessage.ChatMessageRole.USER, wrappedSummary);
+
+        } catch (Exception e) {
+            Msg.warn(this, "Compaction LLM call failed: " + e.getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * Truncate a string to the given max length, appending an indicator if truncated.
+     */
+    private static String truncate(String text, int maxLength) {
+        if (text == null) return "";
+        if (text.length() <= maxLength) return text;
+        return text.substring(0, maxLength) + "... [truncated]";
+    }
+
     /**
      * Find a safe point to start trimming that doesn't break tool call/result pairs
      */
     private int findSafeTrimPoint() {
-        int targetSize = Math.max(MIN_RECENT_MESSAGES, MAX_CONVERSATION_HISTORY - 2);
+        int targetSize = COMPACT_KEEP_RECENT; // Keep a small number of recent messages; compact the rest
         int startFromEnd = Math.min(targetSize, conversationHistory.size() - 1);
-        
+
         // Start from desired point and look backwards for a safe boundary
         for (int lookback = 0; lookback < startFromEnd; lookback++) {
             int candidateIndex = conversationHistory.size() - startFromEnd + lookback;
-            
+
             // Check if this is a safe cut point (not in middle of tool call/result sequence)
             if (isSafeTrimPoint(candidateIndex)) {
                 return candidateIndex;
             }
         }
-        
+
         // Fallback: keep last half of conversation
         return Math.max(1, conversationHistory.size() / 2);
     }
-    
+
     /**
-     * Check if we can safely trim at this point without breaking tool call/result pairs.
-     * Scans backwards to ensure no preceding assistant message has tool results
-     * that extend past the candidate index.
+     * Check if we can safely trim at this point without breaking tool call/result pairs
      */
     private boolean isSafeTrimPoint(int index) {
         if (index <= 0 || index >= conversationHistory.size()) {
             return false;
         }
 
+        ChatMessage prevMessage = conversationHistory.get(index - 1);
         ChatMessage currentMessage = conversationHistory.get(index);
+
+        // Don't trim if previous message has tool calls (next messages might be tool results)
+        if (prevMessage.getToolCalls() != null && prevMessage.getToolCalls().size() > 0) {
+            return false;
+        }
 
         // Don't trim if current message is a tool result (it needs its tool call)
         if (ChatMessage.ChatMessageRole.TOOL.equals(currentMessage.getRole())) {
             return false;
-        }
-
-        // Scan backwards from the candidate to find the nearest assistant message with tool_calls.
-        // If found, verify all its tool results are before the candidate index.
-        for (int i = index - 1; i >= 0; i--) {
-            ChatMessage msg = conversationHistory.get(i);
-
-            if (ChatMessage.ChatMessageRole.ASSISTANT.equals(msg.getRole()) &&
-                msg.getToolCalls() != null && msg.getToolCalls().size() > 0) {
-
-                // This assistant message has tool_calls. Check if any tool results
-                // for it exist at or after the candidate index.
-                int expectedResults = msg.getToolCalls().size();
-                int foundResults = 0;
-                for (int j = i + 1; j < conversationHistory.size(); j++) {
-                    ChatMessage checkMsg = conversationHistory.get(j);
-                    if (ChatMessage.ChatMessageRole.TOOL.equals(checkMsg.getRole())) {
-                        foundResults++;
-                        if (j >= index) {
-                            // Tool result extends past the trim point - not safe
-                            return false;
-                        }
-                    } else if (!ChatMessage.ChatMessageRole.TOOL.equals(checkMsg.getRole())) {
-                        break; // Stop at non-tool message
-                    }
-                }
-
-                // If we found fewer results than expected, some are missing
-                // (validation will handle this, but don't trim here)
-                if (foundResults < expectedResults) {
-                    return false;
-                }
-
-                // This assistant message's tool results are all before the candidate - safe
-                break;
-            }
-
-            // If we hit a user message, no need to look further back
-            if (ChatMessage.ChatMessageRole.USER.equals(msg.getRole())) {
-                break;
-            }
         }
 
         return true;
