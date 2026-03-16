@@ -250,7 +250,9 @@ public class QueryService {
         ghidra.util.Msg.info(this, "Native tool registry has " + nativeFunctions.size() + " tools available");
 
         if (!nativeFunctions.isEmpty()) {
-            int maxToolRounds = analysisDataService.getMaxToolCalls();
+            // Plain Query mode: no artificial tool round limit.
+            // The maxToolCalls setting only applies to ReAct iterations.
+            int maxToolRounds = 500;
 
             // Get existing history with thinking data preserved for multi-turn conversations
             List<ChatMessage> fullHistory = messageStore.getMessagesForApi();
@@ -298,7 +300,9 @@ public class QueryService {
         ghidra.util.Msg.info(this, "Tool registry has " + allFunctions.size() + " tools available");
 
         if (!allFunctions.isEmpty()) {
-            int maxToolRounds = analysisDataService.getMaxToolCalls();
+            // Plain MCP mode: no artificial tool round limit.
+            // The maxToolCalls setting only applies to ReAct iterations.
+            int maxToolRounds = 500;
 
             // Get existing history with thinking data preserved for multi-turn conversations
             // The current user message is already in the store, so get all PREVIOUS messages

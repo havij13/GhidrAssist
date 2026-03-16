@@ -43,7 +43,7 @@ import java.util.concurrent.TimeoutException;
  */
 public class SettingsTab extends JPanel {
     private static final long serialVersionUID = 1L;
-    private static final String VERSION = "1.22.0";
+    private static final String VERSION = "1.23.0";
     private static final String[] REASONING_EFFORT_OPTIONS = {"None", "Low", "Medium", "High"};
 
     private final TabController controller;
@@ -198,10 +198,10 @@ public class SettingsTab extends JPanel {
         luceneIndexPathField = new JTextField(30);
 
         // Analysis Options
-        SpinnerNumberModel spinnerModel = new SpinnerNumberModel(10, 1, 50, 1);
+        SpinnerNumberModel spinnerModel = new SpinnerNumberModel(10, 1, 500, 1);
         maxToolCallsSpinner = new JSpinner(spinnerModel);
         maxToolCallsSpinner.setPreferredSize(new Dimension(75, maxToolCallsSpinner.getPreferredSize().height));
-        maxToolCallsSpinner.setToolTipText("Maximum tool calls per iteration (default: 10)");
+        maxToolCallsSpinner.setToolTipText("Maximum tool calls per ReAct iteration (default: 10). Plain Query/MCP mode is unlimited.");
 
         apiTimeoutField = new JTextField(5);
         apiTimeoutField.setToolTipText("API timeout in seconds");
@@ -429,7 +429,7 @@ public class SettingsTab extends JPanel {
 
         // Max Tool Calls
         JPanel toolCallsRow = new JPanel(new FlowLayout(FlowLayout.LEFT));
-        toolCallsRow.add(new JLabel("Max Tool Calls/Iteration:"));
+        toolCallsRow.add(new JLabel("Max Tool Calls/ReAct Iteration:"));
         toolCallsRow.add(maxToolCallsSpinner);
 
         // API Timeout
