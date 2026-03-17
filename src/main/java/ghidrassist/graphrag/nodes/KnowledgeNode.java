@@ -130,7 +130,7 @@ public class KnowledgeNode {
      * External functions use null address to avoid unique index conflicts.
      */
     public static KnowledgeNode createExternalFunction(String binaryId, String name) {
-        KnowledgeNode node = new KnowledgeNode(NodeType.FUNCTION, binaryId);
+        KnowledgeNode node = new KnowledgeNode(NodeType.EXTERNAL, binaryId);
         node.setAddress(null);  // External functions have no address
         node.setName(name);
         return node;

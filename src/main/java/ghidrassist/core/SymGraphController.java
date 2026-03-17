@@ -1122,7 +1122,23 @@ public class SymGraphController {
         // Use PLT address for externals without real addresses
         Long resolved = node.getAddress() != null ? node.getAddress() : resolveExternalAddress(node.getName());
         nodeMap.put("address", resolved != null ? String.format("0x%x", resolved) : "0x0");
-        nodeMap.put("node_type", node.getAddress() != null ? node.getType().name().toLowerCase() : "external");
+        // Classify node type - check for external/thunk functions
+        String nodeType = node.getType().name().toLowerCase();
+        if (nodeType.equals("function")) {
+            if (node.getAddress() == null) {
+                nodeType = "external";
+            } else {
+                Program program = plugin.getCurrentProgram();
+                if (program != null) {
+                    Address addr = program.getAddressFactory().getDefaultAddressSpace().getAddress(node.getAddress());
+                    Function func = program.getFunctionManager().getFunctionAt(addr);
+                    if (func != null && (func.isExternal() || func.isThunk())) {
+                        nodeType = "external";
+                    }
+                }
+            }
+        }
+        nodeMap.put("node_type", nodeType);
         nodeMap.put("name", node.getName());
         nodeMap.put("raw_content", node.getRawContent());
         nodeMap.put("llm_summary", node.getLlmSummary());
