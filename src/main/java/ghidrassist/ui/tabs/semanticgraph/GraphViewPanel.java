@@ -85,6 +85,7 @@ public class GraphViewPanel extends JPanel {
     private static final Color VULN_HIGH_FILL = new Color(0x99, 0x1B, 0x1B);     // #991B1B
     private static final Color VULN_MEDIUM_FILL = new Color(0x92, 0x40, 0x0E);   // #92400E
     private static final Color NORMAL_FILL = new Color(0x37, 0x41, 0x51);        // #374151
+    private static final Color EXTERNAL_FILL = new Color(0x4B, 0x55, 0x63);     // #4B5563
 
     // Node strokes
     private static final Color CENTER_STROKE = new Color(0x3B, 0x82, 0xF6);      // #3B82F6
@@ -92,6 +93,7 @@ public class GraphViewPanel extends JPanel {
     private static final Color VULN_STROKE = new Color(0xDC, 0x26, 0x26);        // #DC2626
     private static final Color VULN_MEDIUM_STROKE = new Color(0xF5, 0x9E, 0x0B); // #F59E0B
     private static final Color NORMAL_STROKE = new Color(0x4B, 0x55, 0x63);      // #4B5563
+    private static final Color EXTERNAL_STROKE = new Color(0x6B, 0x72, 0x80);   // #6B7280
     private static final Color SELECTED_STROKE = new Color(0x22, 0xD3, 0xEE);    // #22D3EE
 
     // Node text
@@ -1054,6 +1056,11 @@ public class GraphViewPanel extends JPanel {
             nr.strokeColor = CALLER_STROKE;
             nr.textColor = CALLER_TEXT;
             nr.strokeWidth = 1.5f;
+        } else if (node.getType() == ghidrassist.graphrag.nodes.NodeType.EXTERNAL) {
+            nr.fillColor = EXTERNAL_FILL;
+            nr.strokeColor = EXTERNAL_STROKE;
+            nr.textColor = NORMAL_TEXT;
+            nr.strokeWidth = 1.0f;
         } else {
             nr.fillColor = NORMAL_FILL;
             nr.strokeColor = NORMAL_STROKE;
