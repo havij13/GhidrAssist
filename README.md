@@ -235,7 +235,7 @@ When viewing a function in the Explain tab:
 - **Module Discovery**: Community detection groups related functions automatically
 
 ## Homepage
-https://github.com/jtang613/GhidrAssist
+https://symgraph.ai
 
 
 ## Minimum Version
