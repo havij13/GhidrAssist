@@ -165,6 +165,9 @@ public class SymGraphController {
                 List<Map<String, Object>> symbols = new ArrayList<>();
                 Map<String, Object> graphData = null;
 
+                // Build PLT/thunk address map up front so it's available for both symbol and graph collection
+                externalAddressMap = buildExternalAddressMap();
+
                 if (pushSymbols) {
                     SwingUtilities.invokeLater(() -> symGraphTab.updatePushProgress(0, 100, "Collecting symbols..."));
                     symbols = collectLocalSymbols(scope);
@@ -1040,9 +1043,6 @@ public class SymGraphController {
         if (plugin.getCurrentProgram() == null || analysisDB == null) {
             return null;
         }
-
-        // Build PLT/thunk address map for external functions
-        externalAddressMap = buildExternalAddressMap();
 
         List<Map<String, Object>> nodes = new ArrayList<>();
         List<Map<String, Object>> edges = new ArrayList<>();
