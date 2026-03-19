@@ -23,7 +23,6 @@ import okhttp3.Response;
 public abstract class APIProvider implements ChatProvider {
     public enum ProviderType {
         ANTHROPIC_CLAUDE_CLI,
-        ANTHROPIC_OAUTH,
         ANTHROPIC_PLATFORM_API,
         AZURE_OPENAI,
         GEMINI_OAUTH,

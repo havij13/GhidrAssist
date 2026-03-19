@@ -125,7 +125,6 @@ public class ProviderRegistry {
      */
     private void registerDefaultFactories() {
         registerFactory(new AnthropicClaudeCliProviderFactory());
-        registerFactory(new AnthropicOAuthProviderFactory());
         registerFactory(new AnthropicPlatformApiProviderFactory());
         registerFactory(new AzureOpenAIProviderFactory());
         registerFactory(new GeminiOAuthProviderFactory());
