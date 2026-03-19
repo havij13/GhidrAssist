@@ -559,6 +559,24 @@ public class SymGraphController {
 
     // ==== Helper Methods ====
 
+    /**
+     * Determine symbol provenance: decompiler (auto-named), llm (LLM-renamed), or user (manually renamed).
+     */
+    private String getSymbolProvenance(boolean isAutoName, long address, String symbolType) {
+        if (isAutoName) {
+            return "decompiler";
+        }
+        try {
+            String programHash = getProgramSHA256();
+            if (programHash != null && analysisDB != null && analysisDB.isLlmRenamed(programHash, address, symbolType)) {
+                return "llm";
+            }
+        } catch (Exception e) {
+            // Fall through to "user"
+        }
+        return "user";
+    }
+
     private String getProgramSHA256() {
         try {
             if (plugin.getCurrentProgram() != null) {
@@ -724,7 +742,7 @@ public class SymGraphController {
         // Use unified default name detection for cross-tool compatibility
         boolean isAuto = ghidrassist.services.symgraph.SymGraphUtils.isDefaultName(func.getName());
         map.put("confidence", isAuto ? 0.5 : 0.9);
-        map.put("provenance", isAuto ? "decompiler" : "user");
+        map.put("provenance", getSymbolProvenance(isAuto, func.getEntryPoint().getOffset(), "function"));
         return map;
     }
 
@@ -757,7 +775,7 @@ public class SymGraphController {
                         map.put("data_type", data.getDataType().getName());
                     }
                     map.put("confidence", isAutoNamed ? 0.3 : 0.85);
-                    map.put("provenance", isAutoNamed ? "decompiler" : "user");
+                    map.put("provenance", getSymbolProvenance(isAutoNamed, addr.getOffset(), "variable"));
                     symbols.add(map);
                 }
             }
@@ -785,7 +803,7 @@ public class SymGraphController {
                         map.put("data_type", param.getDataType().getName());
                     }
                     map.put("confidence", isAuto ? 0.3 : 0.8);
-                    map.put("provenance", isAuto ? "decompiler" : "user");
+                    map.put("provenance", getSymbolProvenance(isAuto, func.getEntryPoint().getOffset(), "variable"));
 
                     Map<String, Object> metadata = new HashMap<>();
                     metadata.put("scope", "parameter");
@@ -825,7 +843,7 @@ public class SymGraphController {
                         map.put("data_type", var.getDataType().getName());
                     }
                     map.put("confidence", isAuto ? 0.3 : 0.75);
-                    map.put("provenance", isAuto ? "decompiler" : "user");
+                    map.put("provenance", getSymbolProvenance(isAuto, func.getEntryPoint().getOffset(), "variable"));
 
                     Map<String, Object> metadata = new HashMap<>();
                     metadata.put("scope", "local");
@@ -1143,7 +1161,8 @@ public class SymGraphController {
         nodeMap.put("raw_content", node.getRawContent());
         nodeMap.put("llm_summary", node.getLlmSummary());
         nodeMap.put("confidence", node.getConfidence());
-        nodeMap.put("provenance", "user");
+        nodeMap.put("provenance", node.isUserEdited() ? "user" :
+            (node.getLlmSummary() != null && !node.getLlmSummary().isEmpty() ? "llm" : "decompiler"));
 
         // Add security-related fields if present
         if (node.getSecurityFlags() != null && !node.getSecurityFlags().isEmpty()) {

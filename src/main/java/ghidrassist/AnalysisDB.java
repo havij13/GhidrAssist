@@ -1512,6 +1512,43 @@ public class AnalysisDB {
     }
 
     /**
+     * Record that a symbol was renamed by an LLM suggestion.
+     */
+    public void recordLlmRename(String binaryId, long address, String symbolType, String newName) {
+        String sql = "INSERT OR REPLACE INTO llm_renames (binary_id, address, symbol_type, new_name, created_at) "
+                + "VALUES (?, ?, ?, ?, ?)";
+        try (PreparedStatement pstmt = connection.prepareStatement(sql)) {
+            pstmt.setString(1, binaryId);
+            pstmt.setLong(2, address);
+            pstmt.setString(3, symbolType);
+            pstmt.setString(4, newName);
+            pstmt.setLong(5, System.currentTimeMillis());
+            pstmt.executeUpdate();
+        } catch (SQLException e) {
+            Msg.error(this, "Failed to record LLM rename: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * Check if a symbol at the given address was renamed by an LLM.
+     */
+    public boolean isLlmRenamed(String binaryId, long address, String symbolType) {
+        String sql = "SELECT COUNT(*) FROM llm_renames WHERE binary_id = ? AND address = ? AND symbol_type = ?";
+        try (PreparedStatement pstmt = connection.prepareStatement(sql)) {
+            pstmt.setString(1, binaryId);
+            pstmt.setLong(2, address);
+            pstmt.setString(3, symbolType);
+            ResultSet rs = pstmt.executeQuery();
+            if (rs.next()) {
+                return rs.getInt(1) > 0;
+            }
+        } catch (SQLException e) {
+            Msg.error(this, "Failed to check LLM rename: " + e.getMessage(), e);
+        }
+        return false;
+    }
+
+    /**
      * Get the maximum iteration number for a ReAct session.
      * Used to continue iteration numbering across multiple ReAct runs in same session.
      *

@@ -38,6 +38,7 @@ public class SchemaMigrationRunner {
         migrations.add(new V4_UserEditedColumn());
         migrations.add(new V5_UniqueAddressIndex());
         migrations.add(new V6_LineExplanations());
+        migrations.add(new V7_LlmRenames());
 
         // Sort by version number to ensure correct order
         migrations.sort(Comparator.comparingInt(SchemaMigration::getVersion));
