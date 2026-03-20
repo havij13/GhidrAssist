@@ -36,6 +36,7 @@ public class SymGraphTab extends JPanel {
     private JRadioButton currentFunctionRadio;
     private JCheckBox pushSymbolsCheck;
     private JCheckBox pushGraphCheck;
+    private JComboBox<String> pushVisibilityCombo;
     private JButton pushButton;
     private JLabel pushStatusLabel;
     private JProgressBar pushProgressBar;
@@ -167,6 +168,8 @@ public class SymGraphTab extends JPanel {
 
         pushSymbolsCheck = new JCheckBox("Symbols (function names, variables, types)", true);
         pushGraphCheck = new JCheckBox("Graph (nodes, edges, summaries)", true);
+        pushVisibilityCombo = new JComboBox<>(new String[]{"Public", "Private"});
+        pushVisibilityCombo.setToolTipText("Private pushes may be unavailable on lower SymGraph tiers.");
 
         pushButton = new JButton("Push to SymGraph");
         pushStatusLabel = new JLabel("Status: Ready");
@@ -374,6 +377,11 @@ public class SymGraphTab extends JPanel {
         dataRow.add(pushSymbolsCheck);
         dataRow.add(pushGraphCheck);
         contentPanel.add(dataRow);
+
+        JPanel visibilityRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 5, 0));
+        visibilityRow.add(new JLabel("Visibility:"));
+        visibilityRow.add(pushVisibilityCombo);
+        contentPanel.add(visibilityRow);
 
         // Button and status row
         JPanel buttonRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 5, 0));
@@ -862,13 +870,14 @@ public class SymGraphTab extends JPanel {
                 PushScope.FULL_BINARY.getValue() : PushScope.CURRENT_FUNCTION.getValue();
         boolean pushSymbols = pushSymbolsCheck.isSelected();
         boolean pushGraph = pushGraphCheck.isSelected();
+        String visibility = "Private".equals(pushVisibilityCombo.getSelectedItem()) ? "private" : "public";
 
         if (!pushSymbols && !pushGraph) {
             setPushStatus("Select at least one data type", false);
             return;
         }
 
-        controller.handleSymGraphPush(scope, pushSymbols, pushGraph);
+        controller.handleSymGraphPush(scope, pushSymbols, pushGraph, visibility);
     }
 
     private void handleApplyClicked() {

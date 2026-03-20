@@ -40,6 +40,10 @@ public class SymGraphController {
     private SymGraphApplyWorker applyWorker;
     private SymGraphPullWorker pullWorker;
     private Map<String, Long> externalAddressMap;
+    private String pendingPushScope;
+    private boolean pendingPushSymbols;
+    private boolean pendingPushGraph;
+    private String pendingPushVisibility = "public";
 
     public SymGraphController(GhidrAssistPlugin plugin, AnalysisDB analysisDB) {
         this.plugin = plugin;
@@ -119,7 +123,7 @@ public class SymGraphController {
     /**
      * Handle SymGraph push request.
      */
-    public void handlePush(String scope, boolean pushSymbols, boolean pushGraph) {
+    public void handlePush(String scope, boolean pushSymbols, boolean pushGraph, String visibility) {
         if (symGraphTab == null || symGraphService == null) {
             Msg.showError(this, null, "Error", "SymGraph tab not initialized");
             return;
@@ -136,6 +140,11 @@ public class SymGraphController {
                 "Push requires a SymGraph API key.\n\nAdd your API key in Settings > General > SymGraph");
             return;
         }
+
+        pendingPushScope = scope;
+        pendingPushSymbols = pushSymbols;
+        pendingPushGraph = pushGraph;
+        pendingPushVisibility = visibility;
 
         // Use atomic boolean for cancellation
         final java.util.concurrent.atomic.AtomicBoolean cancelled = new java.util.concurrent.atomic.AtomicBoolean(false);
@@ -199,12 +208,23 @@ public class SymGraphController {
                 }
 
                 PushResult totalResult = PushResult.success(0, 0, 0);
+                PushResult revisionResult = symGraphService.createBinaryRevision(sha256, visibility);
+                if (!revisionResult.isSuccess()) {
+                    final PushResult failureResult = revisionResult;
+                    SwingUtilities.invokeLater(() -> handlePushFailure(failureResult));
+                    return;
+                }
+                Integer targetRevision = revisionResult.getBinaryRevision();
+                totalResult.setBinaryRevision(targetRevision);
 
                 // Push symbols in chunks with progress
                 if (!symbols.isEmpty()) {
-                    PushResult symbolResult = symGraphService.pushSymbolsChunked(sha256, symbols, progressCallback);
+                    PushResult symbolResult = symGraphService.pushSymbolsChunked(
+                        sha256, symbols, targetRevision, progressCallback);
                     if (!symbolResult.isSuccess()) {
-                        throw new Exception(symbolResult.getError());
+                        final PushResult failureResult = symbolResult;
+                        SwingUtilities.invokeLater(() -> handlePushFailure(failureResult));
+                        return;
                     }
                     totalResult.setSymbolsPushed(symbolResult.getSymbolsPushed());
                 }
@@ -216,9 +236,12 @@ public class SymGraphController {
 
                 // Push graph in chunks with progress
                 if (graphData != null) {
-                    PushResult graphResult = symGraphService.importGraphChunked(sha256, graphData, progressCallback);
+                    PushResult graphResult = symGraphService.importGraphChunked(
+                        sha256, graphData, targetRevision, progressCallback);
                     if (!graphResult.isSuccess()) {
-                        throw new Exception(graphResult.getError());
+                        final PushResult failureResult = graphResult;
+                        SwingUtilities.invokeLater(() -> handlePushFailure(failureResult));
+                        return;
                     }
                     totalResult.setNodesPushed(graphResult.getNodesPushed());
                     totalResult.setEdgesPushed(graphResult.getEdgesPushed());
@@ -243,6 +266,9 @@ public class SymGraphController {
                     if (result.getNodesPushed() > 0) parts.add(result.getNodesPushed() + " nodes");
                     if (result.getEdgesPushed() > 0) parts.add(result.getEdgesPushed() + " edges");
                     msg.append(parts.isEmpty() ? "complete" : String.join(", ", parts));
+                    if (result.getBinaryRevision() != null) {
+                        msg.append(" to v").append(result.getBinaryRevision());
+                    }
                     symGraphTab.setPushStatus(msg.toString(), true);
                 });
             } catch (Exception e) {
@@ -256,6 +282,31 @@ public class SymGraphController {
         }, "SymGraph-Push-Worker");
         pushThread.setDaemon(true);
         pushThread.start();
+    }
+
+    private void handlePushFailure(PushResult failureResult) {
+        symGraphTab.hidePushProgress();
+        symGraphTab.setButtonsEnabled(true);
+
+        if ("visibility_quota_exceeded".equals(failureResult.getErrorCode())
+                && failureResult.getRequestedVisibility() != null
+                && !"public".equals(failureResult.getRequestedVisibility())) {
+            String suggestedVisibility = failureResult.getSuggestedVisibility() != null
+                    ? failureResult.getSuggestedVisibility()
+                    : "public";
+            int choice = JOptionPane.showConfirmDialog(
+                    symGraphTab,
+                    failureResult.getError() + "\n\nRetry this push as " + suggestedVisibility + "?",
+                    "Visibility Not Available",
+                    JOptionPane.YES_NO_OPTION,
+                    JOptionPane.WARNING_MESSAGE);
+            if (choice == JOptionPane.YES_OPTION) {
+                handlePush(pendingPushScope, pendingPushSymbols, pendingPushGraph, suggestedVisibility);
+                return;
+            }
+        }
+
+        symGraphTab.setPushStatus("Error: " + failureResult.getError(), false);
     }
 
     private void handlePushCancelled() {

@@ -2,6 +2,7 @@ package ghidrassist.services.symgraph;
 
 import java.io.IOException;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -445,16 +446,28 @@ public class SymGraphService {
      * Push symbols to SymGraph in bulk (authenticated).
      */
     public PushResult pushSymbolsBulk(String sha256, List<Map<String, Object>> symbols) throws IOException, SymGraphAuthException {
-        return pushSymbolsBulk(sha256, symbols, null);
+        return pushSymbolsBulk(sha256, symbols, null, null);
     }
 
     /**
      * Push symbols to SymGraph in bulk with retry support (authenticated).
      */
     public PushResult pushSymbolsBulk(String sha256, List<Map<String, Object>> symbols, ProgressCallback progress) throws IOException, SymGraphAuthException {
+        return pushSymbolsBulk(sha256, symbols, null, progress);
+    }
+
+    public PushResult pushSymbolsBulk(
+            String sha256,
+            List<Map<String, Object>> symbols,
+            Integer targetRevision,
+            ProgressCallback progress) throws IOException, SymGraphAuthException {
         checkAuthRequired();
 
-        String url = getApiUrl() + "/api/v1/binaries/" + sha256 + "/symbols/bulk";
+        HttpUrl.Builder urlBuilder = HttpUrl.parse(getApiUrl() + "/api/v1/binaries/" + sha256 + "/symbols/bulk").newBuilder();
+        if (targetRevision != null) {
+            urlBuilder.addQueryParameter("target_revision", String.valueOf(targetRevision));
+        }
+        HttpUrl url = urlBuilder.build();
         Msg.debug(this, TAG + ": Pushing " + symbols.size() + " symbols to: " + url);
 
         Map<String, Object> payload = new HashMap<>();
@@ -476,15 +489,17 @@ public class SymGraphService {
                 throw new SymGraphAuthException("Invalid API key");
             }
             if (!response.isSuccessful()) {
-                String errorBody = response.body() != null ? response.body().string() : "Unknown error";
-                return PushResult.failure("Error pushing symbols: " + response.code() + " - " + errorBody);
+                return buildPushFailure("Error pushing symbols", response);
             }
 
             String responseBody = response.body().string();
             JsonObject json = JsonParser.parseString(responseBody).getAsJsonObject();
             int symbolsCreated = getIntOrDefault(json, "symbols_created", symbols.size());
+            Integer binaryRevision = json.has("binary_revision") && !json.get("binary_revision").isJsonNull()
+                    ? json.get("binary_revision").getAsInt()
+                    : targetRevision;
 
-            return PushResult.success(symbolsCreated, 0, 0);
+            return PushResult.success(symbolsCreated, 0, 0, binaryRevision);
         }
     }
 
@@ -494,6 +509,14 @@ public class SymGraphService {
      */
     public PushResult pushSymbolsChunked(String sha256, List<Map<String, Object>> symbols, ProgressCallback progress)
             throws IOException, SymGraphAuthException {
+        return pushSymbolsChunked(sha256, symbols, null, progress);
+    }
+
+    public PushResult pushSymbolsChunked(
+            String sha256,
+            List<Map<String, Object>> symbols,
+            Integer targetRevision,
+            ProgressCallback progress) throws IOException, SymGraphAuthException {
         checkAuthRequired();
 
         if (symbols.isEmpty()) {
@@ -503,6 +526,15 @@ public class SymGraphService {
         int totalSymbols = symbols.size();
         int totalPushed = 0;
         int chunkIndex = 0;
+        Integer writeRevision = targetRevision;
+
+        if (writeRevision == null) {
+            PushResult revisionResult = createBinaryRevision(sha256, "public");
+            if (!revisionResult.isSuccess()) {
+                return revisionResult;
+            }
+            writeRevision = revisionResult.getBinaryRevision();
+        }
 
         Msg.info(this, TAG + ": Pushing " + totalSymbols + " symbols in chunks of " + CHUNK_SIZE);
 
@@ -524,7 +556,7 @@ public class SymGraphService {
             }
 
             // Push this chunk (with retry support)
-            PushResult chunkResult = pushSymbolsBulk(sha256, chunk, progress);
+            PushResult chunkResult = pushSymbolsBulk(sha256, chunk, writeRevision, progress);
             if (!chunkResult.isSuccess()) {
                 return PushResult.failure("Chunk " + chunkIndex + " failed: " + chunkResult.getError());
             }
@@ -538,7 +570,7 @@ public class SymGraphService {
         }
 
         Msg.info(this, TAG + ": Successfully pushed " + totalPushed + " symbols");
-        return PushResult.success(totalPushed, 0, 0);
+        return PushResult.success(totalPushed, 0, 0, writeRevision);
     }
 
     /**
@@ -548,6 +580,15 @@ public class SymGraphService {
     @SuppressWarnings("unchecked")
     public PushResult importGraphChunked(String sha256, Map<String, Object> graphData, ProgressCallback progress)
             throws IOException, SymGraphAuthException {
+        return importGraphChunked(sha256, graphData, null, progress);
+    }
+
+    @SuppressWarnings("unchecked")
+    public PushResult importGraphChunked(
+            String sha256,
+            Map<String, Object> graphData,
+            Integer targetRevision,
+            ProgressCallback progress) throws IOException, SymGraphAuthException {
         checkAuthRequired();
 
         List<Map<String, Object>> nodes = (List<Map<String, Object>>) graphData.get("nodes");
@@ -563,6 +604,15 @@ public class SymGraphService {
         int processedItems = 0;
         int totalNodesPushed = 0;
         int totalEdgesPushed = 0;
+        Integer writeRevision = targetRevision;
+
+        if (writeRevision == null) {
+            PushResult revisionResult = createBinaryRevision(sha256, "public");
+            if (!revisionResult.isSuccess()) {
+                return revisionResult;
+            }
+            writeRevision = revisionResult.getBinaryRevision();
+        }
 
         Msg.info(this, TAG + ": Pushing " + totalNodes + " nodes and " + totalEdges + " edges");
 
@@ -586,7 +636,7 @@ public class SymGraphService {
                 chunkData.put("nodes", nodeChunk);
                 chunkData.put("edges", new ArrayList<>());
 
-                PushResult result = importGraph(sha256, chunkData, progress);
+                PushResult result = importGraph(sha256, chunkData, writeRevision, progress);
                 if (!result.isSuccess()) {
                     return PushResult.failure("Node chunk failed: " + result.getError());
                 }
@@ -616,7 +666,7 @@ public class SymGraphService {
                 chunkData.put("nodes", new ArrayList<>());
                 chunkData.put("edges", edgeChunk);
 
-                PushResult result = importGraph(sha256, chunkData, progress);
+                PushResult result = importGraph(sha256, chunkData, writeRevision, progress);
                 if (!result.isSuccess()) {
                     return PushResult.failure("Edge chunk failed: " + result.getError());
                 }
@@ -632,26 +682,38 @@ public class SymGraphService {
         }
 
         Msg.info(this, TAG + ": Successfully pushed " + totalNodesPushed + " nodes, " + totalEdgesPushed + " edges");
-        return PushResult.success(0, totalNodesPushed, totalEdgesPushed);
+        return PushResult.success(0, totalNodesPushed, totalEdgesPushed, writeRevision);
     }
 
     /**
      * Import graph data to SymGraph (authenticated).
      */
     public PushResult importGraph(String sha256, Map<String, Object> graphData) throws IOException, SymGraphAuthException {
-        return importGraph(sha256, graphData, null);
+        return importGraph(sha256, graphData, null, null);
     }
 
     /**
      * Import graph data to SymGraph with retry support (authenticated).
      */
     public PushResult importGraph(String sha256, Map<String, Object> graphData, ProgressCallback progress) throws IOException, SymGraphAuthException {
+        return importGraph(sha256, graphData, null, progress);
+    }
+
+    public PushResult importGraph(
+            String sha256,
+            Map<String, Object> graphData,
+            Integer targetRevision,
+            ProgressCallback progress) throws IOException, SymGraphAuthException {
         checkAuthRequired();
 
-        String url = getApiUrl() + "/api/v1/binaries/" + sha256 + "/graph/import";
+        HttpUrl.Builder urlBuilder = HttpUrl.parse(getApiUrl() + "/api/v1/binaries/" + sha256 + "/graph/import").newBuilder();
+        if (targetRevision != null) {
+            urlBuilder.addQueryParameter("target_revision", String.valueOf(targetRevision));
+        }
+        HttpUrl url = urlBuilder.build();
         Msg.debug(this, TAG + ": Importing graph to: " + url);
 
-        RequestBody body = RequestBody.create(gson.toJson(graphData), JSON);
+        RequestBody body = RequestBody.create(gson.toJson(buildGraphExportPayload(sha256, graphData)), JSON);
 
         Request request = new Request.Builder()
                 .url(url)
@@ -667,16 +729,53 @@ public class SymGraphService {
                 throw new SymGraphAuthException("Invalid API key");
             }
             if (!response.isSuccessful()) {
-                String errorBody = response.body() != null ? response.body().string() : "Unknown error";
-                return PushResult.failure("Error importing graph: " + response.code() + " - " + errorBody);
+                return buildPushFailure("Error importing graph", response);
             }
 
             String responseBody = response.body().string();
             JsonObject json = JsonParser.parseString(responseBody).getAsJsonObject();
-            int nodesImported = getIntOrDefault(json, "nodes_imported", 0);
-            int edgesImported = getIntOrDefault(json, "edges_imported", 0);
+            int nodesImported = getIntOrDefault(json, "nodes_imported", getIntOrDefault(json, "imported_nodes", 0));
+            int edgesImported = getIntOrDefault(json, "edges_imported", getIntOrDefault(json, "imported_edges", 0));
+            Integer binaryRevision = json.has("binary_revision") && !json.get("binary_revision").isJsonNull()
+                    ? json.get("binary_revision").getAsInt()
+                    : targetRevision;
 
-            return PushResult.success(0, nodesImported, edgesImported);
+            return PushResult.success(0, nodesImported, edgesImported, binaryRevision);
+        }
+    }
+
+    public PushResult createBinaryRevision(String sha256, String visibility) throws IOException, SymGraphAuthException {
+        checkAuthRequired();
+
+        String url = getApiUrl() + "/api/v1/binaries/" + sha256 + "/versions";
+        Msg.debug(this, TAG + ": Creating binary revision at: " + url + " visibility=" + visibility);
+
+        Map<String, Object> payload = new HashMap<>();
+        payload.put("visibility", visibility);
+
+        RequestBody body = RequestBody.create(gson.toJson(payload), JSON);
+
+        Request request = new Request.Builder()
+                .url(url)
+                .post(body)
+                .addHeader("Content-Type", "application/json")
+                .addHeader("Accept", "application/json")
+                .addHeader("X-API-Key", getApiKey())
+                .addHeader("User-Agent", "GhidrAssist-SymGraph/1.0")
+                .build();
+
+        try (Response response = client.newCall(request).execute()) {
+            if (response.code() == 401) {
+                throw new SymGraphAuthException("Invalid API key");
+            }
+            if (!response.isSuccessful()) {
+                return buildPushFailure("Error creating binary revision", response);
+            }
+
+            String responseBody = response.body().string();
+            JsonObject json = JsonParser.parseString(responseBody).getAsJsonObject();
+            int binaryRevision = getIntOrDefault(json, "version", 0);
+            return PushResult.success(0, 0, 0, binaryRevision);
         }
     }
 
@@ -766,6 +865,54 @@ public class SymGraphService {
                 return PushResult.failure(e.getMessage());
             }
         });
+    }
+
+    private PushResult buildPushFailure(String prefix, Response response) throws IOException {
+        String errorBody = response.body() != null ? response.body().string() : "";
+        String message = prefix + ": HTTP " + response.code();
+        String errorCode = null;
+        String requestedVisibility = null;
+        String suggestedVisibility = null;
+
+        if (errorBody != null && !errorBody.isEmpty()) {
+            try {
+                JsonElement errorElement = JsonParser.parseString(errorBody);
+                if (errorElement.isJsonObject()) {
+                    JsonObject errorJson = errorElement.getAsJsonObject();
+                    String apiMessage = getStringOrNull(errorJson, "error");
+                    if (apiMessage != null && !apiMessage.isEmpty()) {
+                        message = prefix + ": " + apiMessage;
+                    } else {
+                        message = prefix + ": HTTP " + response.code();
+                    }
+                    errorCode = getStringOrNull(errorJson, "code");
+                    requestedVisibility = getStringOrNull(errorJson, "requested_visibility");
+                    suggestedVisibility = getStringOrNull(errorJson, "suggested_visibility");
+                } else {
+                    message = prefix + ": " + errorBody;
+                }
+            } catch (Exception parseError) {
+                message = prefix + ": " + errorBody;
+            }
+        }
+
+        return PushResult.failure(message, errorCode, requestedVisibility, suggestedVisibility);
+    }
+
+    private Map<String, Object> buildGraphExportPayload(String sha256, Map<String, Object> graphData) {
+        Map<String, Object> payload = new HashMap<>();
+        payload.put("version", graphData.getOrDefault("version", graphData.getOrDefault("export_version", "1.0")));
+        payload.put("exported_at", Instant.now().toString());
+
+        Map<String, Object> binary = new HashMap<>();
+        binary.put("sha256", sha256);
+        payload.put("binary", binary);
+        payload.put("nodes", graphData.getOrDefault("nodes", new ArrayList<>()));
+        payload.put("edges", graphData.getOrDefault("edges", new ArrayList<>()));
+        payload.put("communities", graphData.getOrDefault("communities", new ArrayList<>()));
+        payload.put("community_members", graphData.getOrDefault("community_members", new ArrayList<>()));
+
+        return payload;
     }
 
     // === Helper Methods ===

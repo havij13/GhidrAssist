@@ -325,23 +325,43 @@ public class SymGraphModels {
         private int symbolsPushed;
         private int nodesPushed;
         private int edgesPushed;
+        private Integer binaryRevision;
         private String error;
+        private String errorCode;
+        private String requestedVisibility;
+        private String suggestedVisibility;
 
         public PushResult() {}
 
         public static PushResult success(int symbols, int nodes, int edges) {
+            return success(symbols, nodes, edges, null);
+        }
+
+        public static PushResult success(int symbols, int nodes, int edges, Integer binaryRevision) {
             PushResult result = new PushResult();
             result.success = true;
             result.symbolsPushed = symbols;
             result.nodesPushed = nodes;
             result.edgesPushed = edges;
+            result.binaryRevision = binaryRevision;
             return result;
         }
 
         public static PushResult failure(String errorMsg) {
+            return failure(errorMsg, null, null, null);
+        }
+
+        public static PushResult failure(
+                String errorMsg,
+                String errorCode,
+                String requestedVisibility,
+                String suggestedVisibility) {
             PushResult result = new PushResult();
             result.success = false;
             result.error = errorMsg;
+            result.errorCode = errorCode;
+            result.requestedVisibility = requestedVisibility;
+            result.suggestedVisibility = suggestedVisibility;
             return result;
         }
 
@@ -353,8 +373,16 @@ public class SymGraphModels {
         public void setNodesPushed(int nodesPushed) { this.nodesPushed = nodesPushed; }
         public int getEdgesPushed() { return edgesPushed; }
         public void setEdgesPushed(int edgesPushed) { this.edgesPushed = edgesPushed; }
+        public Integer getBinaryRevision() { return binaryRevision; }
+        public void setBinaryRevision(Integer binaryRevision) { this.binaryRevision = binaryRevision; }
         public String getError() { return error; }
         public void setError(String error) { this.error = error; }
+        public String getErrorCode() { return errorCode; }
+        public void setErrorCode(String errorCode) { this.errorCode = errorCode; }
+        public String getRequestedVisibility() { return requestedVisibility; }
+        public void setRequestedVisibility(String requestedVisibility) { this.requestedVisibility = requestedVisibility; }
+        public String getSuggestedVisibility() { return suggestedVisibility; }
+        public void setSuggestedVisibility(String suggestedVisibility) { this.suggestedVisibility = suggestedVisibility; }
     }
 
     /**

@@ -2563,8 +2563,8 @@ public class TabController {
      * Handle SymGraph push request.
      * Delegates to SymGraphController.
      */
-    public void handleSymGraphPush(String scope, boolean pushSymbols, boolean pushGraph) {
-        symGraphController.handlePush(scope, pushSymbols, pushGraph);
+    public void handleSymGraphPush(String scope, boolean pushSymbols, boolean pushGraph, String visibility) {
+        symGraphController.handlePush(scope, pushSymbols, pushGraph, visibility);
     }
 
     /**
