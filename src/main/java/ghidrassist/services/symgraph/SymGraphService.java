@@ -1,6 +1,8 @@
 package ghidrassist.services.symgraph;
 
 import java.io.IOException;
+import java.net.URI;
+import java.net.URISyntaxException;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -112,6 +114,44 @@ public class SymGraphService {
         return url.endsWith("/") ? url.substring(0, url.length() - 1) : url;
     }
 
+    public String getWebUrl() {
+        String apiUrl = getApiUrl();
+        try {
+            URI uri = new URI(apiUrl);
+            String host = uri.getHost();
+            String path = uri.getPath() != null ? uri.getPath() : "";
+
+            if (host != null && host.startsWith("api.") && (path.isEmpty() || "/".equals(path))) {
+                host = host.substring(4);
+            }
+
+            if (path.endsWith("/api/v1")) {
+                path = path.substring(0, path.length() - 7);
+            } else if (path.endsWith("/api")) {
+                path = path.substring(0, path.length() - 4);
+            }
+
+            URI webUri = new URI(
+                uri.getScheme(),
+                uri.getUserInfo(),
+                host,
+                uri.getPort(),
+                path.isEmpty() ? null : path,
+                null,
+                null
+            );
+            String normalized = webUri.toString();
+            return normalized.endsWith("/") ? normalized.substring(0, normalized.length() - 1) : normalized;
+        } catch (URISyntaxException e) {
+            Msg.warn(this, TAG + ": Failed to normalize SymGraph web URL: " + e.getMessage());
+            return apiUrl;
+        }
+    }
+
+    public String getBinaryUrl(String sha256) {
+        return getWebUrl() + "/binaries/" + sha256;
+    }
+
     public String getApiKey() {
         return Preferences.getProperty("GhidrAssist.SymGraphAPIKey", "");
     }
@@ -146,7 +186,15 @@ public class SymGraphService {
      * Get binary statistics from SymGraph (unauthenticated).
      */
     public BinaryStats getBinaryStats(String sha256) throws IOException {
-        String url = getApiUrl() + "/api/v1/binaries/" + sha256 + "/stats";
+        return getBinaryStats(sha256, null);
+    }
+
+    public BinaryStats getBinaryStats(String sha256, Integer version) throws IOException {
+        HttpUrl.Builder urlBuilder = HttpUrl.parse(getApiUrl() + "/api/v1/binaries/" + sha256 + "/stats").newBuilder();
+        if (version != null) {
+            urlBuilder.addQueryParameter("version", String.valueOf(version));
+        }
+        String url = urlBuilder.build().toString();
         Msg.debug(this, TAG + ": Getting binary stats: " + url);
 
         Request request = new Request.Builder()
@@ -189,23 +237,87 @@ public class SymGraphService {
     }
 
     /**
+     * List accessible binary revisions (authenticated).
+     */
+    public List<BinaryRevision> listBinaryVersions(String sha256) throws IOException, SymGraphAuthException {
+        checkAuthRequired();
+
+        String url = getApiUrl() + "/api/v1/binaries/" + sha256 + "/versions";
+        Msg.debug(this, TAG + ": Listing binary versions: " + url);
+
+        Request request = new Request.Builder()
+                .url(url)
+                .get()
+                .addHeader("Accept", "application/json")
+                .addHeader("X-API-Key", getApiKey())
+                .addHeader("User-Agent", "GhidrAssist-SymGraph/1.0")
+                .build();
+
+        try (Response response = client.newCall(request).execute()) {
+            if (response.code() == 401 || response.code() == 403) {
+                throw new SymGraphAuthException("Invalid API key");
+            }
+            if (response.code() == 404) {
+                return new ArrayList<>();
+            }
+            if (!response.isSuccessful()) {
+                throw new IOException("Error listing binary versions: " + response.code());
+            }
+
+            String body = response.body().string();
+            JsonObject json = JsonParser.parseString(body).getAsJsonObject();
+            List<BinaryRevision> revisions = new ArrayList<>();
+            if (json.has("revisions") && json.get("revisions").isJsonArray()) {
+                JsonArray revisionsArray = json.getAsJsonArray("revisions");
+                for (JsonElement element : revisionsArray) {
+                    if (!element.isJsonObject()) {
+                        continue;
+                    }
+                    JsonObject revObj = element.getAsJsonObject();
+                    BinaryRevision revision = new BinaryRevision();
+                    revision.setVersion(getIntOrDefault(revObj, "version", 0));
+                    revision.setCreatedAt(getStringOrNull(revObj, "created_at"));
+                    revision.setVisibility(getStringOrNull(revObj, "visibility"));
+                    revision.setLatest(revObj.has("is_latest") && !revObj.get("is_latest").isJsonNull()
+                            && revObj.get("is_latest").getAsBoolean());
+                    revision.setOwnerUsername(getStringOrNull(revObj, "owner_username"));
+                    revisions.add(revision);
+                }
+            }
+            return revisions;
+        }
+    }
+
+    /**
      * Query SymGraph for binary info (unauthenticated).
      */
     public QueryResult queryBinary(String sha256) {
+        return queryBinary(sha256, null, false);
+    }
+
+    public QueryResult queryBinary(String sha256, Integer version, boolean includeVersions) {
         try {
             boolean exists = checkBinaryExists(sha256);
             if (!exists) {
                 return QueryResult.notFound();
             }
 
-            BinaryStats stats = getBinaryStats(sha256);
-            if (stats != null) {
-                return QueryResult.found(stats);
-            } else {
-                QueryResult result = new QueryResult();
-                result.setExists(true);
-                return result;
+            List<BinaryRevision> revisions = new ArrayList<>();
+            Integer latestRevision = null;
+            if (includeVersions && hasApiKey()) {
+                try {
+                    revisions = listBinaryVersions(sha256);
+                    if (!revisions.isEmpty()) {
+                        latestRevision = revisions.get(0).getVersion();
+                    }
+                } catch (Exception e) {
+                    Msg.warn(this, TAG + ": Unable to list binary versions: " + e.getMessage());
+                }
             }
+
+            Integer effectiveVersion = version != null ? version : latestRevision;
+            BinaryStats stats = getBinaryStats(sha256, effectiveVersion);
+            return QueryResult.found(stats, revisions, latestRevision, effectiveVersion);
         } catch (Exception e) {
             Msg.error(this, TAG + ": Query error: " + e.getMessage());
             return QueryResult.error(e.getMessage());
@@ -227,12 +339,20 @@ public class SymGraphService {
      * @param symbolType Optional symbol type filter (e.g., "function", "data", "type"). Pass null for all symbols.
      */
     public List<Symbol> getSymbols(String sha256, String symbolType) throws IOException, SymGraphAuthException {
+        return getSymbols(sha256, symbolType, null);
+    }
+
+    public List<Symbol> getSymbols(String sha256, String symbolType, Integer version) throws IOException, SymGraphAuthException {
         checkAuthRequired();
 
-        String url = getApiUrl() + "/api/v1/binaries/" + sha256 + "/symbols";
+        HttpUrl.Builder urlBuilder = HttpUrl.parse(getApiUrl() + "/api/v1/binaries/" + sha256 + "/symbols").newBuilder();
         if (symbolType != null && !symbolType.isEmpty()) {
-            url += "?type=" + symbolType;
+            urlBuilder.addQueryParameter("type", symbolType);
         }
+        if (version != null) {
+            urlBuilder.addQueryParameter("version", String.valueOf(version));
+        }
+        String url = urlBuilder.build().toString();
         Msg.debug(this, TAG + ": Getting symbols: " + url);
 
         Request request = new Request.Builder()
@@ -304,9 +424,17 @@ public class SymGraphService {
      * Export graph data for a binary (authenticated).
      */
     public GraphExport exportGraph(String sha256) throws IOException, SymGraphAuthException {
+        return exportGraph(sha256, null);
+    }
+
+    public GraphExport exportGraph(String sha256, Integer version) throws IOException, SymGraphAuthException {
         checkAuthRequired();
 
-        String url = getApiUrl() + "/api/v1/binaries/" + sha256 + "/graph/export";
+        HttpUrl.Builder urlBuilder = HttpUrl.parse(getApiUrl() + "/api/v1/binaries/" + sha256 + "/graph/export").newBuilder();
+        if (version != null) {
+            urlBuilder.addQueryParameter("version", String.valueOf(version));
+        }
+        String url = urlBuilder.build().toString();
         Msg.debug(this, TAG + ": Exporting graph: " + url);
 
         Request request = new Request.Builder()

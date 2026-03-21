@@ -1,63 +1,54 @@
 package ghidrassist.ui.tabs;
 
+import ghidrassist.core.TabController;
+import ghidrassist.services.symgraph.SymGraphModels.BinaryRevision;
+import ghidrassist.services.symgraph.SymGraphModels.ConflictAction;
+import ghidrassist.services.symgraph.SymGraphModels.ConflictEntry;
+import ghidrassist.services.symgraph.SymGraphModels.GraphExport;
+import ghidrassist.services.symgraph.SymGraphModels.PushScope;
+
 import javax.swing.*;
 import javax.swing.table.DefaultTableModel;
-import javax.swing.table.TableCellRenderer;
 import java.awt.*;
-import java.awt.event.ActionListener;
+import java.net.URI;
 import java.util.ArrayList;
 import java.util.List;
-
-import ghidrassist.core.TabController;
-import ghidrassist.services.symgraph.SymGraphModels.*;
+import java.util.Map;
 
 /**
- * Tab for SymGraph integration - query, push, and pull symbols/graph data.
+ * SymGraph tab with Status / Fetch / Push subtabs.
  */
 public class SymGraphTab extends JPanel {
     private static final long serialVersionUID = 1L;
+
+    private static final String MERGE_POLICY_UPSERT = "upsert";
+    private static final String MERGE_POLICY_PREFER_LOCAL = "prefer_local";
+    private static final String MERGE_POLICY_REPLACE = "replace";
+
     private final TabController controller;
 
-    // Binary info section
+    // Shared binary info
     private JLabel binaryNameLabel;
     private JLabel sha256Label;
+    private JLabel localSummaryLabel;
 
-    // Query section
+    // Status tab
     private JButton queryButton;
+    private JButton openBinaryButton;
     private JLabel statusLabel;
     private JPanel statsPanel;
     private JLabel symbolsStatLabel;
     private JLabel functionsStatLabel;
     private JLabel nodesStatLabel;
+    private JLabel edgesStatLabel;
     private JLabel updatedStatLabel;
+    private JLabel latestRevisionLabel;
+    private JLabel accessibleVersionsLabel;
+    private String openBinaryUrl;
 
-    // Push section
-    private JRadioButton fullBinaryRadio;
-    private JRadioButton currentFunctionRadio;
-    private JCheckBox pushSymbolsCheck;
-    private JCheckBox pushGraphCheck;
-    private JComboBox<String> pushVisibilityCombo;
-    private JButton pushButton;
-    private JLabel pushStatusLabel;
-    private JProgressBar pushProgressBar;
-    private JButton cancelPushButton;
-
-    // Pull section
-    private JButton pullPreviewButton;
-    private JTable conflictTable;
-    private DefaultTableModel conflictTableModel;
-    private JButton selectAllButton;
-    private JButton deselectAllButton;
-    private JButton invertSelectionButton;
-    private JButton applyButton;
-    private JButton cancelButton;
-    private JLabel pullStatusLabel;
-    private JProgressBar pullProgressBar;
-    private JLabel pullProgressLabel;
-    private JButton cancelPullButton;
-    private JPanel pullProgressPanel;
-
-    // Pull configuration
+    // Fetch tab
+    private JComboBox<String> fetchVersionCombo;
+    private JTextField fetchNameFilterField;
     private JCheckBox pullFunctionsCheck;
     private JCheckBox pullVariablesCheck;
     private JCheckBox pullTypesCheck;
@@ -65,67 +56,64 @@ public class SymGraphTab extends JPanel {
     private JCheckBox pullGraphCheck;
     private JSlider confidenceSlider;
     private JLabel confidenceValueLabel;
-
-    // Wizard components
-    private static final String PAGE_INITIAL = "initial";
-    private static final String PAGE_SUMMARY = "summary";
-    private static final String PAGE_DETAILS = "details";
-    private static final String PAGE_APPLYING = "applying";
-    private static final String PAGE_COMPLETE = "complete";
-
-    private static final String MERGE_POLICY_UPSERT = "upsert";
-    private static final String MERGE_POLICY_PREFER_LOCAL = "prefer_local";
-    private static final String MERGE_POLICY_REPLACE = "replace";
-
-    private CardLayout wizardLayout;
-    private JPanel wizardPanel;
-
-    // Summary page
-    private JLabel summaryNewCount;
-    private JLabel summaryConflictCount;
-    private JLabel summarySameCount;
-    private JLabel summaryGraphLabel;
+    private JButton pullPreviewButton;
+    private JButton fetchResetButton;
+    private JLabel summaryNewCountLabel;
+    private JLabel summaryConflictCountLabel;
+    private JLabel summarySameCountLabel;
+    private JLabel summarySelectedCountLabel;
     private JLabel summaryGraphNodesLabel;
     private JLabel summaryGraphEdgesLabel;
-    private JLabel summaryGraphCommunitiesLabel;
-    private ButtonGroup summaryMergeGroup;
+    private JLabel summaryGraphVersionLabel;
+    private JTable conflictTable;
+    private DefaultTableModel conflictTableModel;
+    private JButton selectAllButton;
+    private JButton deselectAllButton;
+    private JButton selectNewButton;
+    private JButton selectConflictsButton;
+    private JButton invertSelectionButton;
     private JButton applyAllNewButton;
-    private JButton reviewConflictsButton;
-    private JButton showAllButton;
-    private JButton summaryBackButton;
+    private JButton applyButton;
+    private JProgressBar fetchProgressBar;
+    private JLabel fetchProgressLabel;
+    private JLabel pullStatusLabel;
 
-    // Details page
-    private JTabbedPane detailsTabs;
-    private JLabel detailsGraphLabel;
-    private JLabel detailsGraphNodesLabel;
-    private JLabel detailsGraphEdgesLabel;
-    private JLabel detailsGraphCommunitiesLabel;
-    private JLabel detailsGraphPolicyLabel;
-    private ButtonGroup detailsMergeGroup;
-    private JButton backToSummaryButton;
+    // Push tab
+    private JRadioButton fullBinaryRadio;
+    private JRadioButton currentFunctionRadio;
+    private JComboBox<String> pushVisibilityCombo;
+    private JCheckBox pushFunctionsCheck;
+    private JCheckBox pushVariablesCheck;
+    private JCheckBox pushTypesCheck;
+    private JCheckBox pushCommentsCheck;
+    private JCheckBox pushGraphCheck;
+    private JTextField pushNameFilterField;
+    private JButton pushPreviewButton;
+    private JButton pushButton;
+    private JLabel pushMatchingCountLabel;
+    private JLabel pushSelectedCountLabel;
+    private JLabel pushGraphNodesLabel;
+    private JLabel pushGraphEdgesLabel;
+    private JTable pushPreviewTable;
+    private DefaultTableModel pushPreviewTableModel;
+    private JButton pushSelectAllButton;
+    private JButton pushDeselectAllButton;
+    private JButton pushInvertSelectionButton;
+    private JProgressBar pushProgressBar;
+    private JLabel pushProgressLabel;
+    private JLabel pushStatusLabel;
+    private Runnable pushCancelCallback;
 
-    // Applying page
-    private JProgressBar applyProgressBar;
-    private JLabel applyProgressLabel;
-    private JButton applyCancelButton;
-
-    // Complete page
-    private JLabel completeIcon;
-    private JLabel completeMessage;
-    private JButton doneButton;
-
-    // Stored conflict data
-    private List<ConflictEntry> currentConflicts = new ArrayList<>();
-    private List<ConflictEntry> displayedConflicts = new ArrayList<>();
-
+    // State
+    private final List<ConflictEntry> displayedConflicts = new ArrayList<>();
+    private final List<Map<String, Object>> pushPreviewSymbols = new ArrayList<>();
     private GraphExport graphPreviewData;
     private int graphPreviewNodes;
     private int graphPreviewEdges;
-    private int graphPreviewCommunities;
     private String graphMergePolicy = MERGE_POLICY_UPSERT;
-
-    // Push cancellation callback
-    private Runnable pushCancelCallback;
+    private Map<String, Object> pushGraphData;
+    private int pushGraphNodes;
+    private int pushGraphEdges;
 
     public SymGraphTab(TabController controller) {
         super(new BorderLayout());
@@ -136,172 +124,157 @@ public class SymGraphTab extends JPanel {
     }
 
     private void initializeComponents() {
-        // Binary info
         binaryNameLabel = new JLabel("<no binary loaded>");
         binaryNameLabel.setFont(binaryNameLabel.getFont().deriveFont(Font.BOLD));
         sha256Label = new JLabel("<none>");
         sha256Label.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 11));
+        localSummaryLabel = new JLabel("No binary loaded");
+        localSummaryLabel.setForeground(Color.GRAY);
 
-        // Query section
-        queryButton = new JButton("Check SymGraph");
+        queryButton = new JButton("Query SymGraph");
+        openBinaryButton = new JButton("Open in SymGraph");
+        openBinaryButton.setEnabled(false);
         statusLabel = new JLabel("Not checked");
         statusLabel.setForeground(Color.GRAY);
-
         symbolsStatLabel = new JLabel("Symbols: -");
         functionsStatLabel = new JLabel("Functions: -");
         nodesStatLabel = new JLabel("Graph Nodes: -");
+        edgesStatLabel = new JLabel("Graph Edges: -");
         updatedStatLabel = new JLabel("Last Updated: -");
-
-        statsPanel = new JPanel(new GridLayout(2, 2, 10, 5));
-        statsPanel.add(symbolsStatLabel);
-        statsPanel.add(functionsStatLabel);
-        statsPanel.add(nodesStatLabel);
-        statsPanel.add(updatedStatLabel);
+        latestRevisionLabel = new JLabel("Latest Version: -");
+        accessibleVersionsLabel = new JLabel("Accessible Versions: -");
+        statsPanel = new JPanel(new GridBagLayout());
+        GridBagConstraints statsGbc = new GridBagConstraints();
+        statsGbc.anchor = GridBagConstraints.WEST;
+        statsGbc.insets = new Insets(2, 5, 2, 24);
+        statsGbc.gridx = 0;
+        statsGbc.gridy = 0;
+        statsPanel.add(symbolsStatLabel, statsGbc);
+        statsGbc.gridx = 1;
+        statsPanel.add(functionsStatLabel, statsGbc);
+        statsGbc.gridx = 0;
+        statsGbc.gridy = 1;
+        statsPanel.add(nodesStatLabel, statsGbc);
+        statsGbc.gridx = 1;
+        statsPanel.add(edgesStatLabel, statsGbc);
+        statsGbc.gridx = 0;
+        statsGbc.gridy = 2;
+        statsPanel.add(updatedStatLabel, statsGbc);
+        statsGbc.gridx = 1;
+        statsPanel.add(latestRevisionLabel, statsGbc);
+        statsGbc.gridx = 0;
+        statsGbc.gridy = 3;
+        statsGbc.gridwidth = 2;
+        statsPanel.add(accessibleVersionsLabel, statsGbc);
+        statsPanel.setBorder(BorderFactory.createCompoundBorder(
+                BorderFactory.createEtchedBorder(),
+                BorderFactory.createEmptyBorder(6, 8, 6, 8)));
         statsPanel.setVisible(false);
 
-        // Push section
-        fullBinaryRadio = new JRadioButton("Full Binary");
-        currentFunctionRadio = new JRadioButton("Current Function", true);
-        ButtonGroup scopeGroup = new ButtonGroup();
-        scopeGroup.add(fullBinaryRadio);
-        scopeGroup.add(currentFunctionRadio);
-
-        pushSymbolsCheck = new JCheckBox("Symbols (function names, variables, types)", true);
-        pushGraphCheck = new JCheckBox("Graph (nodes, edges, summaries)", true);
-        pushVisibilityCombo = new JComboBox<>(new String[]{"Public", "Private"});
-        pushVisibilityCombo.setToolTipText("Private pushes may be unavailable on lower SymGraph tiers.");
-
-        pushButton = new JButton("Push to SymGraph");
-        pushStatusLabel = new JLabel("Status: Ready");
-        pushStatusLabel.setForeground(Color.GRAY);
-
-        pushProgressBar = new JProgressBar(0, 100);
-        pushProgressBar.setStringPainted(true);
-        pushProgressBar.setVisible(false);
-
-        cancelPushButton = new JButton("Cancel");
-        cancelPushButton.setVisible(false);
-
-        // Pull section
-        pullPreviewButton = new JButton("Pull & Preview");
-
-        // Pull configuration - Symbol type checkboxes
+        fetchVersionCombo = new JComboBox<>();
+        fetchVersionCombo.addItem("Latest");
+        fetchNameFilterField = new JTextField(18);
         pullFunctionsCheck = new JCheckBox("Functions", true);
         pullVariablesCheck = new JCheckBox("Variables", true);
         pullTypesCheck = new JCheckBox("Types", true);
         pullCommentsCheck = new JCheckBox("Comments", true);
         pullGraphCheck = new JCheckBox("Include Graph Data", true);
-        pullGraphCheck.setToolTipText("Download graph nodes and edges for semantic analysis");
-
-        // Confidence slider (0-100, displayed as 0.0-1.0)
         confidenceSlider = new JSlider(JSlider.HORIZONTAL, 0, 100, 0);
-        confidenceSlider.setPreferredSize(new Dimension(100, 20));
-        confidenceSlider.setToolTipText("Only show symbols with confidence >= this threshold");
         confidenceValueLabel = new JLabel("0.0");
-
-        confidenceSlider.addChangeListener(e -> {
-            double value = confidenceSlider.getValue() / 100.0;
-            confidenceValueLabel.setText(String.format("%.1f", value));
-        });
+        pullPreviewButton = new JButton("Preview Fetch");
+        fetchResetButton = new JButton("Reset");
+        summaryNewCountLabel = new JLabel("New: 0");
+        summaryConflictCountLabel = new JLabel("Conflicts: 0");
+        summarySameCountLabel = new JLabel("Same: 0");
+        summarySelectedCountLabel = new JLabel("Selected: 0");
+        summaryGraphNodesLabel = new JLabel("Graph Nodes: 0");
+        summaryGraphEdgesLabel = new JLabel("Graph Edges: 0");
+        summaryGraphVersionLabel = new JLabel("Version: -");
+        fetchProgressBar = new JProgressBar(0, 100);
+        fetchProgressBar.setVisible(false);
+        fetchProgressLabel = new JLabel("");
+        fetchProgressLabel.setForeground(Color.GRAY);
+        fetchProgressLabel.setVisible(false);
+        pullStatusLabel = new JLabel("");
+        pullStatusLabel.setForeground(Color.GRAY);
 
         conflictTableModel = new DefaultTableModel(
                 new Object[]{"Select", "Address", "Type/Storage", "Local Name", "Remote Name", "Action"}, 0) {
             private static final long serialVersionUID = 1L;
-
             @Override
-            public Class<?> getColumnClass(int column) {
-                return column == 0 ? Boolean.class : String.class;
+            public Class<?> getColumnClass(int columnIndex) {
+                return columnIndex == 0 ? Boolean.class : String.class;
             }
-
             @Override
             public boolean isCellEditable(int row, int column) {
-                return column == 0; // Only checkbox is editable
+                return column == 0;
             }
         };
         conflictTable = new JTable(conflictTableModel);
-        conflictTable.setSelectionMode(ListSelectionModel.MULTIPLE_INTERVAL_SELECTION);
-        conflictTable.setAutoResizeMode(JTable.AUTO_RESIZE_SUBSEQUENT_COLUMNS);
-        conflictTable.setFillsViewportHeight(true);
-
-        // Set column widths - Select narrow, Type/Storage, Action narrow, others flexible
-        conflictTable.getColumnModel().getColumn(0).setMinWidth(50);
-        conflictTable.getColumnModel().getColumn(0).setMaxWidth(60);
-        conflictTable.getColumnModel().getColumn(0).setPreferredWidth(50);
-
-        conflictTable.getColumnModel().getColumn(1).setMinWidth(80);
-        conflictTable.getColumnModel().getColumn(1).setPreferredWidth(100);
-
-        conflictTable.getColumnModel().getColumn(2).setMinWidth(90);
-        conflictTable.getColumnModel().getColumn(2).setPreferredWidth(120);
-
-        conflictTable.getColumnModel().getColumn(3).setMinWidth(100);
-        conflictTable.getColumnModel().getColumn(3).setPreferredWidth(150);
-
-        conflictTable.getColumnModel().getColumn(4).setMinWidth(100);
-        conflictTable.getColumnModel().getColumn(4).setPreferredWidth(150);
-
-        conflictTable.getColumnModel().getColumn(5).setMinWidth(70);
-        conflictTable.getColumnModel().getColumn(5).setMaxWidth(90);
-        conflictTable.getColumnModel().getColumn(5).setPreferredWidth(80);
-
-        // Custom renderer for action column (color-coded)
-        conflictTable.getColumnModel().getColumn(5).setCellRenderer(new ActionCellRenderer());
-
         selectAllButton = new JButton("Select All");
         deselectAllButton = new JButton("Deselect All");
-        invertSelectionButton = new JButton("Invert Selection");
+        selectNewButton = new JButton("Select New");
+        selectConflictsButton = new JButton("Select Conflicts");
+        invertSelectionButton = new JButton("Invert");
+        applyAllNewButton = new JButton("Apply All New");
         applyButton = new JButton("Apply Selected");
-        cancelButton = new JButton("Cancel");
-        pullStatusLabel = new JLabel("");
 
-        // Pull progress components
-        pullProgressBar = new JProgressBar(0, 100);
-        pullProgressBar.setStringPainted(true);
-        pullProgressLabel = new JLabel("Fetching...");
-        pullProgressLabel.setForeground(Color.GRAY);
-        cancelPullButton = new JButton("Cancel");
+        fullBinaryRadio = new JRadioButton("Full Binary");
+        currentFunctionRadio = new JRadioButton("Current Function", true);
+        ButtonGroup scopeGroup = new ButtonGroup();
+        scopeGroup.add(fullBinaryRadio);
+        scopeGroup.add(currentFunctionRadio);
+        pushVisibilityCombo = new JComboBox<>(new String[]{"Public", "Private"});
+        pushFunctionsCheck = new JCheckBox("Functions", true);
+        pushVariablesCheck = new JCheckBox("Variables", true);
+        pushTypesCheck = new JCheckBox("Types", true);
+        pushCommentsCheck = new JCheckBox("Comments", false);
+        pushGraphCheck = new JCheckBox("Include Graph Data", true);
+        pushNameFilterField = new JTextField(18);
+        pushPreviewButton = new JButton("Preview Push");
+        pushButton = new JButton("Push Selected");
+        pushMatchingCountLabel = new JLabel("Matching: 0");
+        pushSelectedCountLabel = new JLabel("Selected: 0");
+        pushGraphNodesLabel = new JLabel("Graph Nodes: 0");
+        pushGraphEdgesLabel = new JLabel("Graph Edges: 0");
+        pushProgressBar = new JProgressBar(0, 100);
+        pushProgressBar.setVisible(false);
+        pushProgressLabel = new JLabel("");
+        pushProgressLabel.setForeground(Color.GRAY);
+        pushProgressLabel.setVisible(false);
+        pushStatusLabel = new JLabel("Status: Ready");
+        pushStatusLabel.setForeground(Color.GRAY);
+
+        pushPreviewTableModel = new DefaultTableModel(
+                new Object[]{"Select", "Address", "Type", "Name", "Confidence", "Provenance"}, 0) {
+            private static final long serialVersionUID = 1L;
+            @Override
+            public Class<?> getColumnClass(int columnIndex) {
+                return columnIndex == 0 ? Boolean.class : String.class;
+            }
+            @Override
+            public boolean isCellEditable(int row, int column) {
+                return column == 0;
+            }
+        };
+        pushPreviewTable = new JTable(pushPreviewTableModel);
+        pushSelectAllButton = new JButton("Select All");
+        pushDeselectAllButton = new JButton("Deselect All");
+        pushInvertSelectionButton = new JButton("Invert");
     }
 
     private void layoutComponents() {
-        // Main container with padding
         JPanel mainPanel = new JPanel(new BorderLayout(5, 5));
         mainPanel.setBorder(BorderFactory.createEmptyBorder(5, 5, 5, 5));
+        mainPanel.add(createBinaryInfoPanel(), BorderLayout.NORTH);
 
-        // Binary Info Section at top
-        JPanel binaryInfoPanel = createBinaryInfoPanel();
-        mainPanel.add(binaryInfoPanel, BorderLayout.NORTH);
-
-        // Create split pane for query/push and pull sections
-        JSplitPane splitPane = new JSplitPane(JSplitPane.VERTICAL_SPLIT);
-        splitPane.setResizeWeight(0.35);
-        splitPane.setContinuousLayout(true);
-
-        // Top panel: Query + Push stacked vertically, full width
-        JPanel topPanel = new JPanel(new BorderLayout(5, 5));
-
-        JPanel queryPushPanel = new JPanel();
-        queryPushPanel.setLayout(new BoxLayout(queryPushPanel, BoxLayout.Y_AXIS));
-
-        JPanel querySection = createQuerySection();
-        querySection.setAlignmentX(Component.LEFT_ALIGNMENT);
-        queryPushPanel.add(querySection);
-        queryPushPanel.add(Box.createVerticalStrut(5));
-
-        JPanel pushSection = createPushSection();
-        pushSection.setAlignmentX(Component.LEFT_ALIGNMENT);
-        queryPushPanel.add(pushSection);
-
-        topPanel.add(queryPushPanel, BorderLayout.CENTER);
-        splitPane.setTopComponent(topPanel);
-
-        // Bottom panel: Pull
-        splitPane.setBottomComponent(createPullSection());
-
-        mainPanel.add(splitPane, BorderLayout.CENTER);
+        JTabbedPane subTabs = new JTabbedPane();
+        subTabs.addTab("Status", createStatusTab());
+        subTabs.addTab("Fetch", createFetchTab());
+        subTabs.addTab("Push", createPushTab());
+        mainPanel.add(subTabs, BorderLayout.CENTER);
 
         add(mainPanel, BorderLayout.CENTER);
-        syncMergePolicySelections();
-        updateGraphLabels();
     }
 
     private JPanel createBinaryInfoPanel() {
@@ -314,605 +287,338 @@ public class SymGraphTab extends JPanel {
         gbc.anchor = GridBagConstraints.WEST;
         gbc.insets = new Insets(2, 5, 2, 5);
 
-        // Binary name row
-        gbc.gridx = 0; gbc.gridy = 0;
+        gbc.gridx = 0;
+        gbc.gridy = 0;
         panel.add(new JLabel("Binary:"), gbc);
-        gbc.gridx = 1; gbc.weightx = 1.0; gbc.fill = GridBagConstraints.HORIZONTAL;
+        gbc.gridx = 1;
+        gbc.weightx = 1.0;
+        gbc.fill = GridBagConstraints.HORIZONTAL;
         panel.add(binaryNameLabel, gbc);
 
-        // SHA256 row
-        gbc.gridx = 0; gbc.gridy = 1; gbc.weightx = 0; gbc.fill = GridBagConstraints.NONE;
+        gbc.gridx = 0;
+        gbc.gridy = 1;
+        gbc.weightx = 0;
+        gbc.fill = GridBagConstraints.NONE;
         panel.add(new JLabel("SHA256:"), gbc);
-        gbc.gridx = 1; gbc.weightx = 1.0; gbc.fill = GridBagConstraints.HORIZONTAL;
+        gbc.gridx = 1;
+        gbc.weightx = 1.0;
+        gbc.fill = GridBagConstraints.HORIZONTAL;
         panel.add(sha256Label, gbc);
 
+        gbc.gridx = 0;
+        gbc.gridy = 2;
+        gbc.weightx = 0;
+        gbc.fill = GridBagConstraints.NONE;
+        panel.add(new JLabel("Local Summary:"), gbc);
+        gbc.gridx = 1;
+        gbc.weightx = 1.0;
+        gbc.fill = GridBagConstraints.HORIZONTAL;
+        panel.add(localSummaryLabel, gbc);
         return panel;
     }
 
-    private JPanel createQuerySection() {
+    private JPanel createStatusTab() {
         JPanel panel = new JPanel(new BorderLayout(5, 5));
-        panel.setBorder(BorderFactory.createCompoundBorder(
-                BorderFactory.createTitledBorder("Query Status"),
+        JPanel container = new JPanel();
+        container.setLayout(new BoxLayout(container, BoxLayout.Y_AXIS));
+
+        JPanel statusCard = new JPanel();
+        statusCard.setLayout(new BoxLayout(statusCard, BoxLayout.Y_AXIS));
+        statusCard.setBorder(BorderFactory.createCompoundBorder(
+                BorderFactory.createTitledBorder("SymGraph Server"),
                 BorderFactory.createEmptyBorder(5, 5, 5, 5)));
 
-        // Button row
         JPanel buttonRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 5, 0));
+        buttonRow.setAlignmentX(Component.LEFT_ALIGNMENT);
         buttonRow.add(queryButton);
+        buttonRow.add(openBinaryButton);
+        statusCard.add(buttonRow);
 
-        // Status row
         JPanel statusRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 5, 0));
+        statusRow.setAlignmentX(Component.LEFT_ALIGNMENT);
         statusRow.add(new JLabel("Status:"));
         statusRow.add(statusLabel);
+        statusCard.add(statusRow);
 
-        JPanel topPanel = new JPanel();
-        topPanel.setLayout(new BoxLayout(topPanel, BoxLayout.Y_AXIS));
-        topPanel.add(buttonRow);
-        topPanel.add(statusRow);
+        statsPanel.setAlignmentX(Component.LEFT_ALIGNMENT);
+        statusCard.add(statsPanel);
+        container.add(statusCard);
 
-        panel.add(topPanel, BorderLayout.NORTH);
-        panel.add(statsPanel, BorderLayout.CENTER);
-
+        panel.add(container, BorderLayout.NORTH);
         return panel;
     }
 
-    private JPanel createPushSection() {
+    private JPanel createFetchTab() {
         JPanel panel = new JPanel(new BorderLayout(5, 5));
-        panel.setBorder(BorderFactory.createCompoundBorder(
-                BorderFactory.createTitledBorder("Push to SymGraph"),
+
+        JPanel config = new JPanel();
+        config.setLayout(new BoxLayout(config, BoxLayout.Y_AXIS));
+        config.setBorder(BorderFactory.createCompoundBorder(
+                BorderFactory.createTitledBorder("Fetch Configuration"),
                 BorderFactory.createEmptyBorder(5, 5, 5, 5)));
 
-        JPanel contentPanel = new JPanel();
-        contentPanel.setLayout(new BoxLayout(contentPanel, BoxLayout.Y_AXIS));
+        JPanel row1 = new JPanel(new FlowLayout(FlowLayout.LEFT, 5, 0));
+        row1.add(new JLabel("Version:"));
+        row1.add(fetchVersionCombo);
+        row1.add(new JLabel("Name Filter:"));
+        row1.add(fetchNameFilterField);
+        config.add(row1);
 
-        // Scope row
-        JPanel scopeRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 5, 0));
-        scopeRow.add(new JLabel("Scope:"));
-        scopeRow.add(fullBinaryRadio);
-        scopeRow.add(currentFunctionRadio);
-        contentPanel.add(scopeRow);
+        JPanel row2 = new JPanel(new FlowLayout(FlowLayout.LEFT, 5, 0));
+        row2.add(new JLabel("Symbol Types:"));
+        row2.add(pullFunctionsCheck);
+        row2.add(pullVariablesCheck);
+        row2.add(pullTypesCheck);
+        row2.add(pullCommentsCheck);
+        row2.add(pullGraphCheck);
+        config.add(row2);
 
-        // Data checkboxes row
-        JPanel dataRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 5, 0));
-        dataRow.add(new JLabel("Data to Push:"));
-        dataRow.add(pushSymbolsCheck);
-        dataRow.add(pushGraphCheck);
-        contentPanel.add(dataRow);
+        JPanel row3 = new JPanel(new FlowLayout(FlowLayout.LEFT, 5, 0));
+        row3.add(new JLabel("Min Confidence:"));
+        row3.add(confidenceSlider);
+        row3.add(confidenceValueLabel);
+        config.add(row3);
 
-        JPanel visibilityRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 5, 0));
-        visibilityRow.add(new JLabel("Visibility:"));
-        visibilityRow.add(pushVisibilityCombo);
-        contentPanel.add(visibilityRow);
+        JPanel row4 = new JPanel(new FlowLayout(FlowLayout.LEFT, 5, 0));
+        row4.add(createMergePolicyPanel());
+        config.add(row4);
 
-        // Button and status row
-        JPanel buttonRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 5, 0));
-        buttonRow.add(pushButton);
-        buttonRow.add(cancelPushButton);
-        buttonRow.add(pushStatusLabel);
-        contentPanel.add(buttonRow);
+        JPanel row5 = new JPanel(new FlowLayout(FlowLayout.LEFT, 5, 0));
+        row5.add(pullPreviewButton);
+        row5.add(fetchResetButton);
+        config.add(row5);
+        panel.add(config, BorderLayout.NORTH);
 
-        // Progress bar row
-        JPanel progressRow = new JPanel(new BorderLayout(5, 0));
-        progressRow.add(pushProgressBar, BorderLayout.CENTER);
-        contentPanel.add(progressRow);
+        JPanel center = new JPanel(new BorderLayout(5, 5));
+        JPanel summary = new JPanel(new FlowLayout(FlowLayout.LEFT, 10, 0));
+        summary.setBorder(BorderFactory.createEtchedBorder());
+        summary.add(summaryNewCountLabel);
+        summary.add(summaryConflictCountLabel);
+        summary.add(summarySameCountLabel);
+        summary.add(summarySelectedCountLabel);
+        summary.add(summaryGraphNodesLabel);
+        summary.add(summaryGraphEdgesLabel);
+        summary.add(summaryGraphVersionLabel);
+        center.add(summary, BorderLayout.NORTH);
 
-        panel.add(contentPanel, BorderLayout.CENTER);
-        return panel;
-    }
-
-    private JPanel createPullSection() {
-        JPanel panel = new JPanel(new BorderLayout(5, 5));
-        panel.setBorder(BorderFactory.createCompoundBorder(
-                BorderFactory.createTitledBorder("Pull from SymGraph"),
-                BorderFactory.createEmptyBorder(5, 5, 5, 5)));
-
-        // Config panel at top (always visible, like BinAssist)
-        JPanel configPanel = new JPanel();
-        configPanel.setLayout(new BoxLayout(configPanel, BoxLayout.Y_AXIS));
-
-        // Symbol Types label on its own row
-        JPanel typeLabelRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 5, 0));
-        typeLabelRow.add(new JLabel("Symbol Types:"));
-        configPanel.add(typeLabelRow);
-
-        // Checkboxes on next row
-        JPanel typeCheckRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 5, 0));
-        typeCheckRow.add(pullFunctionsCheck);
-        typeCheckRow.add(pullVariablesCheck);
-        typeCheckRow.add(pullTypesCheck);
-        typeCheckRow.add(pullCommentsCheck);
-        configPanel.add(typeCheckRow);
-
-        // Options row: Graph checkbox and confidence slider
-        JPanel optionsRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 5, 0));
-        optionsRow.add(pullGraphCheck);
-        optionsRow.add(Box.createHorizontalStrut(15));
-        optionsRow.add(new JLabel("Min Confidence:"));
-        optionsRow.add(confidenceSlider);
-        optionsRow.add(confidenceValueLabel);
-        configPanel.add(optionsRow);
-
-        // Button row
-        JPanel buttonRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 5, 0));
-        buttonRow.add(pullPreviewButton);
-        buttonRow.add(cancelPullButton);
-        configPanel.add(buttonRow);
-
-        // Pull progress panel (hidden by default)
-        pullProgressPanel = new JPanel(new BorderLayout(5, 5));
-        pullProgressPanel.add(pullProgressBar, BorderLayout.CENTER);
-        pullProgressPanel.add(pullProgressLabel, BorderLayout.SOUTH);
-        pullProgressPanel.setVisible(false);
-        configPanel.add(pullProgressPanel);
-
-        panel.add(configPanel, BorderLayout.NORTH);
-
-        // Create wizard panel with CardLayout (below config)
-        wizardLayout = new CardLayout();
-        wizardPanel = new JPanel(wizardLayout);
-
-        // Create and add wizard pages (no initial page needed - config is always visible)
-        wizardPanel.add(createEmptyPage(), PAGE_INITIAL);
-        wizardPanel.add(createSummaryPage(), PAGE_SUMMARY);
-        wizardPanel.add(createDetailsPage(), PAGE_DETAILS);
-        wizardPanel.add(createApplyingPage(), PAGE_APPLYING);
-        wizardPanel.add(createCompletePage(), PAGE_COMPLETE);
-
-        panel.add(wizardPanel, BorderLayout.CENTER);
-        return panel;
-    }
-
-    private JPanel createEmptyPage() {
-        // Empty placeholder for initial state (config is shown above)
-        JPanel page = new JPanel(new BorderLayout());
-        JLabel infoLabel = new JLabel("<html><i>Configure options above and click 'Pull & Preview' to fetch symbols from SymGraph.</i></html>");
-        infoLabel.setForeground(Color.GRAY);
-        JPanel infoPanel = new JPanel(new FlowLayout(FlowLayout.LEFT));
-        infoPanel.add(infoLabel);
-        page.add(infoPanel, BorderLayout.NORTH);
-        return page;
-    }
-
-    private JPanel createSummaryPage() {
-        JPanel page = new JPanel(new BorderLayout(10, 10));
-        page.setBorder(BorderFactory.createEmptyBorder(10, 10, 10, 10));
-
-        // Title
-        JLabel titleLabel = new JLabel("Preview Summary");
-        titleLabel.setFont(titleLabel.getFont().deriveFont(Font.BOLD, 14f));
-        page.add(titleLabel, BorderLayout.NORTH);
-
-        // Summary cards panel
-        JPanel cardsPanel = new JPanel(new GridLayout(1, 3, 15, 0));
-
-        // NEW card (green)
-        JPanel newCard = createSummaryCard("NEW", new Color(0, 128, 0), new Color(230, 255, 230));
-        summaryNewCount = (JLabel) ((JPanel) newCard.getComponent(0)).getComponent(0);
-        JLabel newSubLabel = new JLabel("(safe)");
-        newSubLabel.setForeground(Color.GRAY);
-        newSubLabel.setFont(newSubLabel.getFont().deriveFont(10f));
-        JPanel newSubPanel = new JPanel(new FlowLayout(FlowLayout.CENTER, 0, 0));
-        newSubPanel.setOpaque(false);
-        newSubPanel.add(newSubLabel);
-        newCard.add(newSubPanel);
-        cardsPanel.add(newCard);
-
-        // CONFLICTS card (orange)
-        JPanel conflictCard = createSummaryCard("CONFLICTS", new Color(255, 140, 0), new Color(255, 245, 230));
-        summaryConflictCount = (JLabel) ((JPanel) conflictCard.getComponent(0)).getComponent(0);
-        JLabel conflictSubLabel = new JLabel("(review)");
-        conflictSubLabel.setForeground(Color.GRAY);
-        conflictSubLabel.setFont(conflictSubLabel.getFont().deriveFont(10f));
-        JPanel conflictSubPanel = new JPanel(new FlowLayout(FlowLayout.CENTER, 0, 0));
-        conflictSubPanel.setOpaque(false);
-        conflictSubPanel.add(conflictSubLabel);
-        conflictCard.add(conflictSubPanel);
-        cardsPanel.add(conflictCard);
-
-        // UNCHANGED card (gray)
-        JPanel sameCard = createSummaryCard("UNCHANGED", Color.GRAY, new Color(245, 245, 245));
-        summarySameCount = (JLabel) ((JPanel) sameCard.getComponent(0)).getComponent(0);
-        JLabel sameSubLabel = new JLabel("(skip)");
-        sameSubLabel.setForeground(Color.GRAY);
-        sameSubLabel.setFont(sameSubLabel.getFont().deriveFont(10f));
-        JPanel sameSubPanel = new JPanel(new FlowLayout(FlowLayout.CENTER, 0, 0));
-        sameSubPanel.setOpaque(false);
-        sameSubPanel.add(sameSubLabel);
-        sameCard.add(sameSubPanel);
-        cardsPanel.add(sameCard);
-
-        JPanel centerPanel = new JPanel(new BorderLayout(5, 15));
-        centerPanel.add(cardsPanel, BorderLayout.NORTH);
-
-        // Graph info panel
-        summaryGraphLabel = new JLabel("No graph data selected");
-        summaryGraphLabel.setForeground(Color.GRAY);
-
-        summaryGraphNodesLabel = new JLabel("Nodes: 0");
-        summaryGraphEdgesLabel = new JLabel("Edges: 0");
-        summaryGraphCommunitiesLabel = new JLabel("Communities: 0");
-
-        JPanel graphStatsRow = new JPanel(new FlowLayout(FlowLayout.CENTER, 10, 0));
-        graphStatsRow.add(summaryGraphNodesLabel);
-        graphStatsRow.add(summaryGraphEdgesLabel);
-        graphStatsRow.add(summaryGraphCommunitiesLabel);
-
-        summaryMergeGroup = new ButtonGroup();
-        JPanel mergePanel = createMergePolicyPanel(summaryMergeGroup);
-
-        JPanel graphPanel = new JPanel();
-        graphPanel.setLayout(new BoxLayout(graphPanel, BoxLayout.Y_AXIS));
-        graphPanel.add(summaryGraphLabel);
-        graphPanel.add(graphStatsRow);
-        graphPanel.add(mergePanel);
-        centerPanel.add(graphPanel, BorderLayout.CENTER);
-
-        page.add(centerPanel, BorderLayout.CENTER);
-
-        // Button panel
-        JPanel buttonPanel = new JPanel(new FlowLayout(FlowLayout.CENTER, 10, 5));
-
-        applyAllNewButton = new JButton("Apply All New");
-        applyAllNewButton.setToolTipText("Apply all NEW symbols without reviewing conflicts");
-
-        reviewConflictsButton = new JButton("Review Conflicts");
-        reviewConflictsButton.setToolTipText("Show only conflicting symbols for review");
-
-        showAllButton = new JButton("Show All Details");
-        showAllButton.setToolTipText("Show full details table with all symbols");
-
-        summaryBackButton = new JButton("Back");
-        summaryBackButton.setToolTipText("Return to configuration");
-
-        buttonPanel.add(applyAllNewButton);
-        buttonPanel.add(reviewConflictsButton);
-        buttonPanel.add(showAllButton);
-        buttonPanel.add(summaryBackButton);
-
-        page.add(buttonPanel, BorderLayout.SOUTH);
-
-        return page;
-    }
-
-    private JPanel createSummaryCard(String title, Color titleColor, Color bgColor) {
-        JPanel card = new JPanel();
-        card.setLayout(new BoxLayout(card, BoxLayout.Y_AXIS));
-        card.setBorder(BorderFactory.createCompoundBorder(
-                BorderFactory.createLineBorder(titleColor, 2),
-                BorderFactory.createEmptyBorder(15, 20, 15, 20)));
-        card.setBackground(bgColor);
-
-        // Count label (large) - centered in its own panel
-        JLabel countLabel = new JLabel("0", SwingConstants.CENTER);
-        countLabel.setFont(countLabel.getFont().deriveFont(Font.BOLD, 28f));
-        countLabel.setForeground(titleColor);
-        countLabel.setAlignmentX(Component.CENTER_ALIGNMENT);
-        countLabel.setHorizontalAlignment(SwingConstants.CENTER);
-
-        JPanel countPanel = new JPanel(new FlowLayout(FlowLayout.CENTER, 0, 0));
-        countPanel.setOpaque(false);
-        countPanel.add(countLabel);
-
-        // Title label - centered
-        JLabel titleLabel = new JLabel(title, SwingConstants.CENTER);
-        titleLabel.setFont(titleLabel.getFont().deriveFont(Font.BOLD, 12f));
-        titleLabel.setForeground(titleColor);
-        titleLabel.setAlignmentX(Component.CENTER_ALIGNMENT);
-        titleLabel.setHorizontalAlignment(SwingConstants.CENTER);
-
-        JPanel titlePanel = new JPanel(new FlowLayout(FlowLayout.CENTER, 0, 0));
-        titlePanel.setOpaque(false);
-        titlePanel.add(titleLabel);
-
-        card.add(countPanel);
-        card.add(Box.createVerticalStrut(5));
-        card.add(titlePanel);
-
-        return card;
-    }
-
-    private JPanel createMergePolicyPanel(ButtonGroup group) {
-        JPanel panel = new JPanel();
-        panel.setLayout(new BoxLayout(panel, BoxLayout.Y_AXIS));
-
-        JLabel label = new JLabel("Graph Merge Policy:");
-        label.setFont(label.getFont().deriveFont(Font.BOLD));
-        panel.add(label);
-
-        JRadioButton upsert = new JRadioButton("Upsert (merge and overwrite)");
-        upsert.setActionCommand(MERGE_POLICY_UPSERT);
-        JRadioButton preferLocal = new JRadioButton("Prefer Local (skip existing)");
-        preferLocal.setActionCommand(MERGE_POLICY_PREFER_LOCAL);
-        JRadioButton replace = new JRadioButton("Replace (clear graph tables)");
-        replace.setActionCommand(MERGE_POLICY_REPLACE);
-
-        group.add(upsert);
-        group.add(preferLocal);
-        group.add(replace);
-
-        ActionListener listener = e -> setGraphMergePolicy(e.getActionCommand());
-        upsert.addActionListener(listener);
-        preferLocal.addActionListener(listener);
-        replace.addActionListener(listener);
-
-        upsert.setSelected(true);
-
-        panel.add(upsert);
-        panel.add(preferLocal);
-        panel.add(replace);
-
-        return panel;
-    }
-
-    private void setGraphMergePolicy(String policy) {
-        if (policy == null) {
-            return;
-        }
-        graphMergePolicy = policy;
-        syncMergePolicySelections();
-        updateGraphLabels();
-    }
-
-    private void syncMergePolicySelections() {
-        syncMergePolicyGroup(summaryMergeGroup);
-        syncMergePolicyGroup(detailsMergeGroup);
-    }
-
-    private void syncMergePolicyGroup(ButtonGroup group) {
-        if (group == null) {
-            return;
-        }
-        for (java.util.Enumeration<AbstractButton> e = group.getElements(); e.hasMoreElements();) {
-            AbstractButton button = e.nextElement();
-            if (graphMergePolicy.equals(button.getActionCommand())) {
-                button.setSelected(true);
-            }
-        }
-    }
-
-    private String getMergePolicyLabel() {
-        switch (graphMergePolicy) {
-            case MERGE_POLICY_PREFER_LOCAL:
-                return "Prefer Local";
-            case MERGE_POLICY_REPLACE:
-                return "Replace";
-            default:
-                return "Upsert";
-        }
-    }
-
-    private JPanel createDetailsPage() {
-        JPanel page = new JPanel(new BorderLayout(5, 5));
-
-        JPanel titleRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 5, 0));
-        JLabel titleLabel = new JLabel("Details");
-        titleLabel.setFont(titleLabel.getFont().deriveFont(Font.BOLD, 14f));
-        titleRow.add(titleLabel);
-        page.add(titleRow, BorderLayout.NORTH);
-
-        detailsTabs = new JTabbedPane();
-
-        // Symbols tab
-        JPanel symbolsTab = new JPanel(new BorderLayout(5, 5));
-        JScrollPane tableScrollPane = new JScrollPane(conflictTable);
-        tableScrollPane.setMinimumSize(new Dimension(500, 150));
-        tableScrollPane.setPreferredSize(new Dimension(600, 200));
-        symbolsTab.add(tableScrollPane, BorderLayout.CENTER);
+        configureTable(conflictTable, 6, 110, 130, 90);
+        center.add(new JScrollPane(conflictTable), BorderLayout.CENTER);
 
         JPanel selectionRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 5, 0));
         selectionRow.add(selectAllButton);
         selectionRow.add(deselectAllButton);
+        selectionRow.add(selectNewButton);
+        selectionRow.add(selectConflictsButton);
         selectionRow.add(invertSelectionButton);
-        symbolsTab.add(selectionRow, BorderLayout.SOUTH);
 
-        // Graph tab
-        JPanel graphTab = new JPanel();
-        graphTab.setLayout(new BoxLayout(graphTab, BoxLayout.Y_AXIS));
-        detailsGraphLabel = new JLabel("No graph data available");
-        detailsGraphLabel.setForeground(Color.GRAY);
-        detailsGraphNodesLabel = new JLabel("Nodes: 0");
-        detailsGraphEdgesLabel = new JLabel("Edges: 0");
-        detailsGraphCommunitiesLabel = new JLabel("Communities: 0");
-        detailsGraphPolicyLabel = new JLabel("Selected policy: Upsert");
-        detailsGraphPolicyLabel.setForeground(Color.DARK_GRAY);
+        JPanel actionRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 5, 0));
+        actionRow.add(applyAllNewButton);
+        actionRow.add(applyButton);
 
-        JPanel graphStatsRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 10, 0));
-        graphStatsRow.add(detailsGraphNodesLabel);
-        graphStatsRow.add(detailsGraphEdgesLabel);
-        graphStatsRow.add(detailsGraphCommunitiesLabel);
+        JPanel bottom = new JPanel();
+        bottom.setLayout(new BoxLayout(bottom, BoxLayout.Y_AXIS));
+        bottom.add(selectionRow);
+        bottom.add(actionRow);
+        bottom.add(fetchProgressBar);
+        bottom.add(fetchProgressLabel);
+        bottom.add(pullStatusLabel);
+        center.add(bottom, BorderLayout.SOUTH);
 
-        detailsMergeGroup = new ButtonGroup();
-        JPanel mergePanel = createMergePolicyPanel(detailsMergeGroup);
-
-        graphTab.add(detailsGraphLabel);
-        graphTab.add(Box.createVerticalStrut(5));
-        graphTab.add(graphStatsRow);
-        graphTab.add(Box.createVerticalStrut(10));
-        graphTab.add(detailsGraphPolicyLabel);
-        graphTab.add(Box.createVerticalStrut(5));
-        graphTab.add(mergePanel);
-        graphTab.add(Box.createVerticalGlue());
-
-        detailsTabs.addTab("Symbols", symbolsTab);
-        detailsTabs.addTab("Graph", graphTab);
-
-        page.add(detailsTabs, BorderLayout.CENTER);
-
-        // Bottom buttons (including Back to Summary)
-        JPanel bottomPanel = new JPanel();
-        bottomPanel.setLayout(new BoxLayout(bottomPanel, BoxLayout.Y_AXIS));
-
-        JPanel actionRow = new JPanel(new BorderLayout(5, 0));
-        JPanel leftButtons = new JPanel(new FlowLayout(FlowLayout.LEFT, 5, 0));
-        leftButtons.add(applyButton);
-        actionRow.add(leftButtons, BorderLayout.WEST);
-
-        backToSummaryButton = new JButton("Back to Summary");
-        JPanel rightButtons = new JPanel(new FlowLayout(FlowLayout.RIGHT, 5, 0));
-        rightButtons.add(backToSummaryButton);
-        actionRow.add(rightButtons, BorderLayout.EAST);
-
-        JPanel statusRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 5, 0));
-        statusRow.add(pullStatusLabel);
-
-        bottomPanel.add(actionRow);
-        bottomPanel.add(statusRow);
-
-        page.add(bottomPanel, BorderLayout.SOUTH);
-        return page;
+        panel.add(center, BorderLayout.CENTER);
+        return panel;
     }
 
-    private JPanel createApplyingPage() {
-        JPanel page = new JPanel(new BorderLayout(10, 10));
-        page.setBorder(BorderFactory.createEmptyBorder(30, 30, 30, 30));
+    private JPanel createPushTab() {
+        JPanel panel = new JPanel(new BorderLayout(5, 5));
 
-        JPanel centerPanel = new JPanel();
-        centerPanel.setLayout(new BoxLayout(centerPanel, BoxLayout.Y_AXIS));
+        JPanel config = new JPanel();
+        config.setLayout(new BoxLayout(config, BoxLayout.Y_AXIS));
+        config.setBorder(BorderFactory.createCompoundBorder(
+                BorderFactory.createTitledBorder("Push Configuration"),
+                BorderFactory.createEmptyBorder(5, 5, 5, 5)));
 
-        // Title
-        JLabel titleLabel = new JLabel("Applying Changes");
-        titleLabel.setFont(titleLabel.getFont().deriveFont(Font.BOLD, 16f));
-        titleLabel.setAlignmentX(Component.CENTER_ALIGNMENT);
-        centerPanel.add(titleLabel);
-        centerPanel.add(Box.createVerticalStrut(20));
+        JPanel row1 = new JPanel(new FlowLayout(FlowLayout.LEFT, 5, 0));
+        row1.add(new JLabel("Scope:"));
+        row1.add(fullBinaryRadio);
+        row1.add(currentFunctionRadio);
+        row1.add(new JLabel("Visibility:"));
+        row1.add(pushVisibilityCombo);
+        config.add(row1);
 
-        // Progress bar
-        applyProgressBar = new JProgressBar(0, 100);
-        applyProgressBar.setStringPainted(true);
-        applyProgressBar.setPreferredSize(new Dimension(400, 25));
-        applyProgressBar.setMaximumSize(new Dimension(400, 25));
-        applyProgressBar.setAlignmentX(Component.CENTER_ALIGNMENT);
-        centerPanel.add(applyProgressBar);
-        centerPanel.add(Box.createVerticalStrut(10));
+        JPanel row2 = new JPanel(new FlowLayout(FlowLayout.LEFT, 5, 0));
+        row2.add(new JLabel("Symbol Types:"));
+        row2.add(pushFunctionsCheck);
+        row2.add(pushVariablesCheck);
+        row2.add(pushTypesCheck);
+        row2.add(pushCommentsCheck);
+        row2.add(pushGraphCheck);
+        config.add(row2);
 
-        // Progress label
-        applyProgressLabel = new JLabel("Starting...");
-        applyProgressLabel.setForeground(Color.GRAY);
-        applyProgressLabel.setAlignmentX(Component.CENTER_ALIGNMENT);
-        centerPanel.add(applyProgressLabel);
-        centerPanel.add(Box.createVerticalStrut(20));
+        JPanel row3 = new JPanel(new FlowLayout(FlowLayout.LEFT, 5, 0));
+        row3.add(new JLabel("Name Filter:"));
+        row3.add(pushNameFilterField);
+        config.add(row3);
 
-        // Cancel button
-        applyCancelButton = new JButton("Cancel");
-        applyCancelButton.setAlignmentX(Component.CENTER_ALIGNMENT);
-        centerPanel.add(applyCancelButton);
+        JPanel row4 = new JPanel(new FlowLayout(FlowLayout.LEFT, 5, 0));
+        row4.add(pushPreviewButton);
+        row4.add(pushButton);
+        config.add(row4);
+        panel.add(config, BorderLayout.NORTH);
 
-        page.add(centerPanel, BorderLayout.CENTER);
-        return page;
+        JPanel center = new JPanel(new BorderLayout(5, 5));
+        JPanel summary = new JPanel(new FlowLayout(FlowLayout.LEFT, 10, 0));
+        summary.setBorder(BorderFactory.createEtchedBorder());
+        summary.add(pushMatchingCountLabel);
+        summary.add(pushSelectedCountLabel);
+        summary.add(pushGraphNodesLabel);
+        summary.add(pushGraphEdgesLabel);
+        center.add(summary, BorderLayout.NORTH);
+
+        configureTable(pushPreviewTable, 6, 110, 100, 90);
+        center.add(new JScrollPane(pushPreviewTable), BorderLayout.CENTER);
+
+        JPanel selectionRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 5, 0));
+        selectionRow.add(pushSelectAllButton);
+        selectionRow.add(pushDeselectAllButton);
+        selectionRow.add(pushInvertSelectionButton);
+
+        JPanel bottom = new JPanel();
+        bottom.setLayout(new BoxLayout(bottom, BoxLayout.Y_AXIS));
+        bottom.add(selectionRow);
+        bottom.add(pushProgressBar);
+        bottom.add(pushProgressLabel);
+        bottom.add(pushStatusLabel);
+        center.add(bottom, BorderLayout.SOUTH);
+
+        panel.add(center, BorderLayout.CENTER);
+        return panel;
     }
 
-    private JPanel createCompletePage() {
-        JPanel page = new JPanel(new BorderLayout(10, 10));
-        page.setBorder(BorderFactory.createEmptyBorder(30, 30, 30, 30));
+    private void configureTable(JTable table, int columns, int addressWidth, int typeWidth, int actionWidth) {
+        table.setSelectionMode(ListSelectionModel.MULTIPLE_INTERVAL_SELECTION);
+        table.setAutoResizeMode(JTable.AUTO_RESIZE_SUBSEQUENT_COLUMNS);
+        table.setFillsViewportHeight(true);
+        table.getColumnModel().getColumn(0).setMinWidth(50);
+        table.getColumnModel().getColumn(0).setMaxWidth(60);
+        table.getColumnModel().getColumn(1).setMinWidth(80);
+        table.getColumnModel().getColumn(1).setPreferredWidth(addressWidth);
+        table.getColumnModel().getColumn(2).setMinWidth(90);
+        table.getColumnModel().getColumn(2).setPreferredWidth(typeWidth);
+        table.getColumnModel().getColumn(columns - 1).setMinWidth(70);
+        table.getColumnModel().getColumn(columns - 1).setPreferredWidth(actionWidth);
+    }
 
-        JPanel centerPanel = new JPanel();
-        centerPanel.setLayout(new BoxLayout(centerPanel, BoxLayout.Y_AXIS));
-
-        // Success icon (checkmark)
-        completeIcon = new JLabel("✓");
-        completeIcon.setFont(completeIcon.getFont().deriveFont(Font.BOLD, 48f));
-        completeIcon.setForeground(new Color(0, 128, 0));
-        completeIcon.setAlignmentX(Component.CENTER_ALIGNMENT);
-        centerPanel.add(completeIcon);
-        centerPanel.add(Box.createVerticalStrut(15));
-
-        // Complete message
-        completeMessage = new JLabel("Operation Complete");
-        completeMessage.setFont(completeMessage.getFont().deriveFont(Font.BOLD, 16f));
-        completeMessage.setAlignmentX(Component.CENTER_ALIGNMENT);
-        centerPanel.add(completeMessage);
-        centerPanel.add(Box.createVerticalStrut(30));
-
-        // Done button
-        doneButton = new JButton("Done");
-        doneButton.setAlignmentX(Component.CENTER_ALIGNMENT);
-        centerPanel.add(doneButton);
-
-        page.add(centerPanel, BorderLayout.CENTER);
-        return page;
+    private JPanel createMergePolicyPanel() {
+        JPanel panel = new JPanel(new FlowLayout(FlowLayout.LEFT, 5, 0));
+        panel.add(new JLabel("Graph Merge:"));
+        ButtonGroup group = new ButtonGroup();
+        JRadioButton upsert = new JRadioButton("Upsert", true);
+        upsert.setActionCommand(MERGE_POLICY_UPSERT);
+        JRadioButton preferLocal = new JRadioButton("Prefer Local");
+        preferLocal.setActionCommand(MERGE_POLICY_PREFER_LOCAL);
+        JRadioButton replace = new JRadioButton("Replace");
+        replace.setActionCommand(MERGE_POLICY_REPLACE);
+        group.add(upsert);
+        group.add(preferLocal);
+        group.add(replace);
+        upsert.addActionListener(e -> graphMergePolicy = e.getActionCommand());
+        preferLocal.addActionListener(e -> graphMergePolicy = e.getActionCommand());
+        replace.addActionListener(e -> graphMergePolicy = e.getActionCommand());
+        panel.add(upsert);
+        panel.add(preferLocal);
+        panel.add(replace);
+        return panel;
     }
 
     private void setupListeners() {
         queryButton.addActionListener(e -> controller.handleSymGraphQuery());
-        pushButton.addActionListener(e -> handlePushClicked());
-        pullPreviewButton.addActionListener(e -> controller.handleSymGraphPullPreview());
-        applyButton.addActionListener(e -> handleApplyClicked());
-        cancelButton.addActionListener(e -> resetWizard());
-
-        cancelPushButton.addActionListener(e -> {
-            if (pushCancelCallback != null) {
-                pushCancelCallback.run();
+        openBinaryButton.addActionListener(e -> {
+            if (openBinaryUrl != null && Desktop.isDesktopSupported()) {
+                try {
+                    Desktop.getDesktop().browse(new URI(openBinaryUrl));
+                } catch (Exception ignored) {
+                }
             }
         });
-
-        // Initially hide the pull cancel button
-        cancelPullButton.setVisible(false);
-        cancelPullButton.addActionListener(e -> controller.cancelSymGraphPull());
-
-        selectAllButton.addActionListener(e -> setAllSelected(true));
-        deselectAllButton.addActionListener(e -> setAllSelected(false));
-        invertSelectionButton.addActionListener(e -> invertSelection());
-
-        // Wizard navigation listeners
+        pullPreviewButton.addActionListener(e -> controller.handleSymGraphPullPreview());
+        fetchResetButton.addActionListener(e -> clearConflicts());
+        selectAllButton.addActionListener(e -> setAllSelected(conflictTableModel, true));
+        deselectAllButton.addActionListener(e -> setAllSelected(conflictTableModel, false));
+        selectNewButton.addActionListener(e -> selectFetchAction(ConflictAction.NEW));
+        selectConflictsButton.addActionListener(e -> selectFetchAction(ConflictAction.CONFLICT));
+        invertSelectionButton.addActionListener(e -> invertSelection(conflictTableModel));
         applyAllNewButton.addActionListener(e -> controller.handleSymGraphApplyAllNew());
-        reviewConflictsButton.addActionListener(e -> showConflictsOnly());
-        showAllButton.addActionListener(e -> showDetailsPage());
-        summaryBackButton.addActionListener(e -> resetWizard());
-        backToSummaryButton.addActionListener(e -> showSummaryPage());
-        doneButton.addActionListener(e -> resetWizard());
-        applyCancelButton.addActionListener(e -> {
-            // Request cancellation from the controller
-            controller.cancelSymGraphApply();
-        });
+        applyButton.addActionListener(e -> controller.handleSymGraphApplySelected(getSelectedConflicts()));
+        pushPreviewButton.addActionListener(e -> controller.handleSymGraphPushPreview());
+        pushButton.addActionListener(e -> controller.handleSymGraphExecutePush());
+        pushSelectAllButton.addActionListener(e -> setAllSelected(pushPreviewTableModel, true));
+        pushDeselectAllButton.addActionListener(e -> setAllSelected(pushPreviewTableModel, false));
+        pushInvertSelectionButton.addActionListener(e -> invertSelection(pushPreviewTableModel));
+        confidenceSlider.addChangeListener(e -> confidenceValueLabel.setText(String.format("%.1f", confidenceSlider.getValue() / 100.0)));
+        conflictTableModel.addTableModelListener(e -> updateSelectedCounts());
+        pushPreviewTableModel.addTableModelListener(e -> updateSelectedCounts());
     }
 
-    private void handlePushClicked() {
-        String scope = fullBinaryRadio.isSelected() ?
-                PushScope.FULL_BINARY.getValue() : PushScope.CURRENT_FUNCTION.getValue();
-        boolean pushSymbols = pushSymbolsCheck.isSelected();
-        boolean pushGraph = pushGraphCheck.isSelected();
-        String visibility = "Private".equals(pushVisibilityCombo.getSelectedItem()) ? "private" : "public";
-
-        if (!pushSymbols && !pushGraph) {
-            setPushStatus("Select at least one data type", false);
-            return;
+    private void setAllSelected(DefaultTableModel model, boolean selected) {
+        for (int i = 0; i < model.getRowCount(); i++) {
+            model.setValueAt(selected, i, 0);
         }
-
-        controller.handleSymGraphPush(scope, pushSymbols, pushGraph, visibility);
+        updateSelectedCounts();
     }
 
-    private void handleApplyClicked() {
-        List<Long> selectedAddresses = getSelectedAddresses();
-        if (selectedAddresses.isEmpty() && graphPreviewData == null) {
-            setPullStatus("No items selected", false);
-            return;
+    private void invertSelection(DefaultTableModel model) {
+        for (int i = 0; i < model.getRowCount(); i++) {
+            Boolean current = (Boolean) model.getValueAt(i, 0);
+            model.setValueAt(current == null || !current, i, 0);
         }
-        controller.handleSymGraphApplySelected(getSelectedConflicts());
+        updateSelectedCounts();
     }
 
-    private void setAllSelected(boolean selected) {
+    private void selectFetchAction(ConflictAction action) {
+        setAllSelected(conflictTableModel, false);
+        for (int i = 0; i < displayedConflicts.size() && i < conflictTableModel.getRowCount(); i++) {
+            if (displayedConflicts.get(i).getAction() == action) {
+                conflictTableModel.setValueAt(true, i, 0);
+            }
+        }
+        updateSelectedCounts();
+    }
+
+    private void updateSelectedCounts() {
+        int selectedFetch = 0;
         for (int i = 0; i < conflictTableModel.getRowCount(); i++) {
-            conflictTableModel.setValueAt(selected, i, 0);
+            Boolean selected = (Boolean) conflictTableModel.getValueAt(i, 0);
+            if (Boolean.TRUE.equals(selected)) {
+                selectedFetch++;
+            }
         }
-    }
+        summarySelectedCountLabel.setText("Selected: " + selectedFetch);
 
-    private void invertSelection() {
-        for (int i = 0; i < conflictTableModel.getRowCount(); i++) {
-            Boolean current = (Boolean) conflictTableModel.getValueAt(i, 0);
-            conflictTableModel.setValueAt(!current, i, 0);
+        int selectedPush = 0;
+        for (int i = 0; i < pushPreviewTableModel.getRowCount(); i++) {
+            Boolean selected = (Boolean) pushPreviewTableModel.getValueAt(i, 0);
+            if (Boolean.TRUE.equals(selected)) {
+                selectedPush++;
+            }
         }
+        pushSelectedCountLabel.setText("Selected: " + selectedPush);
     }
-
-    // === Public methods for controller ===
 
     public void setBinaryInfo(String name, String sha256) {
         binaryNameLabel.setText(name != null ? name : "<no binary loaded>");
         sha256Label.setText(sha256 != null ? sha256 : "<none>");
+        localSummaryLabel.setText(sha256 != null ? "Binary metadata available" : "No binary loaded");
+    }
+
+    public void setBinaryInfo(String name, String sha256, String localSummary) {
+        setBinaryInfo(name, sha256);
+        localSummaryLabel.setText(localSummary != null ? localSummary : localSummaryLabel.getText());
     }
 
     public void setQueryStatus(String status, boolean found) {
         statusLabel.setText(status);
         if (found) {
-            statusLabel.setForeground(new Color(0, 128, 0)); // Green
+            statusLabel.setForeground(new Color(0, 128, 0));
         } else if (status.toLowerCase().contains("error") || status.toLowerCase().contains("not found")) {
             statusLabel.setForeground(Color.RED);
         } else {
@@ -921,15 +627,58 @@ public class SymGraphTab extends JPanel {
     }
 
     public void setStats(int symbols, int functions, int nodes, String lastUpdated) {
+        setStats(symbols, functions, nodes, lastUpdated, null, null, null);
+    }
+
+    public void setStats(
+            int symbols,
+            int functions,
+            int nodes,
+            String lastUpdated,
+            List<BinaryRevision> revisions,
+            Integer latestRevision,
+            Integer selectedRevision) {
         symbolsStatLabel.setText(String.format("Symbols: %,d", symbols));
         functionsStatLabel.setText(String.format("Functions: %,d", functions));
         nodesStatLabel.setText(String.format("Graph Nodes: %,d", nodes));
+        edgesStatLabel.setText("Graph Edges: -");
         updatedStatLabel.setText("Last Updated: " + (lastUpdated != null ? lastUpdated : "Unknown"));
+        latestRevisionLabel.setText(latestRevision != null ? "Latest Version: v" + latestRevision : "Latest Version: -");
+        accessibleVersionsLabel.setText(revisions != null ? "Accessible Versions: " + revisions.size() : "Accessible Versions: -");
         statsPanel.setVisible(true);
+        setFetchVersions(revisions, selectedRevision);
+    }
+
+    public void setFetchVersions(List<BinaryRevision> revisions, Integer selectedRevision) {
+        fetchVersionCombo.removeAllItems();
+        if (revisions == null || revisions.isEmpty()) {
+            fetchVersionCombo.addItem("Latest");
+            return;
+        }
+        String selectedLabel = null;
+        for (BinaryRevision revision : revisions) {
+            String label = revision.getDisplayLabel();
+            fetchVersionCombo.addItem(label);
+            if (selectedRevision != null && revision.getVersion() == selectedRevision) {
+                selectedLabel = label;
+            }
+        }
+        if (selectedLabel != null) {
+            fetchVersionCombo.setSelectedItem(selectedLabel);
+        } else {
+            fetchVersionCombo.setSelectedIndex(0);
+        }
+    }
+
+    public void setOpenBinaryUrl(String url) {
+        this.openBinaryUrl = url;
+        openBinaryButton.setEnabled(url != null && !url.isEmpty());
     }
 
     public void hideStats() {
         statsPanel.setVisible(false);
+        latestRevisionLabel.setText("Latest Version: -");
+        accessibleVersionsLabel.setText("Accessible Versions: -");
     }
 
     public void setPushStatus(String status, Boolean success) {
@@ -943,34 +692,23 @@ public class SymGraphTab extends JPanel {
         }
     }
 
-    /**
-     * Show the push progress bar and set the cancel callback.
-     */
     public void showPushProgress(Runnable cancelCallback) {
         this.pushCancelCallback = cancelCallback;
         pushProgressBar.setValue(0);
-        pushProgressBar.setString("Starting...");
         pushProgressBar.setVisible(true);
-        cancelPushButton.setVisible(true);
-        pushButton.setEnabled(false);
+        pushProgressLabel.setVisible(true);
     }
 
-    /**
-     * Update the push progress bar.
-     */
     public void updatePushProgress(int current, int total, String message) {
         int percent = total > 0 ? (int) ((current * 100L) / total) : 0;
         pushProgressBar.setValue(percent);
-        pushProgressBar.setString(message != null ? message : String.format("%d/%d (%d%%)", current, total, percent));
+        pushProgressLabel.setText(message != null ? message : percent + "%");
+        pushProgressLabel.setVisible(true);
     }
 
-    /**
-     * Hide the push progress bar.
-     */
     public void hidePushProgress() {
         pushProgressBar.setVisible(false);
-        cancelPushButton.setVisible(false);
-        pushButton.setEnabled(true);
+        pushProgressLabel.setVisible(false);
         pushCancelCallback = null;
     }
 
@@ -985,427 +723,332 @@ public class SymGraphTab extends JPanel {
         }
     }
 
-    /**
-     * Show the pull progress panel.
-     */
     public void showPullProgress(String message) {
-        SwingUtilities.invokeLater(() -> {
-            pullProgressBar.setValue(0);
-            pullProgressBar.setString(message != null ? message : "Fetching...");
-            pullProgressLabel.setText(message != null ? message : "Fetching...");
-            pullProgressPanel.setVisible(true);
-            cancelPullButton.setVisible(true);
-            pullPreviewButton.setEnabled(false);
-        });
+        fetchProgressBar.setValue(0);
+        fetchProgressBar.setVisible(true);
+        fetchProgressLabel.setText(message != null ? message : "Fetching...");
+        fetchProgressLabel.setVisible(true);
     }
 
-    /**
-     * Update the pull progress bar.
-     */
     public void updatePullProgress(int current, int total, String message) {
-        SwingUtilities.invokeLater(() -> {
-            int percent = total > 0 ? (current * 100) / total : 0;
-            pullProgressBar.setValue(percent);
-            pullProgressBar.setString(String.format("%d%%", percent));
-            if (message != null) {
-                pullProgressLabel.setText(message);
-            }
-        });
+        int percent = total > 0 ? (current * 100) / total : 0;
+        fetchProgressBar.setValue(percent);
+        fetchProgressLabel.setText(message != null ? message : percent + "%");
+        fetchProgressLabel.setVisible(true);
     }
 
-    /**
-     * Hide the pull progress panel.
-     */
     public void hidePullProgress() {
-        SwingUtilities.invokeLater(() -> {
-            pullProgressPanel.setVisible(false);
-            cancelPullButton.setVisible(false);
-            pullPreviewButton.setEnabled(true);
-        });
+        fetchProgressBar.setVisible(false);
+        fetchProgressLabel.setVisible(false);
     }
 
     public void populateConflicts(List<ConflictEntry> conflicts) {
-        currentConflicts.clear();
+        conflictTableModel.setRowCount(0);
+        displayedConflicts.clear();
 
-        // Calculate counts for summary
         int newCount = 0;
         int conflictCount = 0;
         int sameCount = 0;
-
         for (ConflictEntry conflict : conflicts) {
-            switch (conflict.getAction()) {
-                case NEW:
-                    newCount++;
-                    break;
-                case CONFLICT:
-                    conflictCount++;
-                    break;
-                case SAME:
-                    sameCount++;
-                    break;
+            if (conflict.getAction() == ConflictAction.NEW) {
+                newCount++;
+            } else if (conflict.getAction() == ConflictAction.CONFLICT) {
+                conflictCount++;
+            } else if (conflict.getAction() == ConflictAction.SAME) {
+                sameCount++;
             }
         }
+        summaryNewCountLabel.setText("New: " + newCount);
+        summaryConflictCountLabel.setText("Conflicts: " + conflictCount);
+        summarySameCountLabel.setText("Same: " + sameCount);
 
-        // Update summary labels
-        summaryNewCount.setText(String.valueOf(newCount));
-        summaryConflictCount.setText(String.valueOf(conflictCount));
-        summarySameCount.setText(String.valueOf(sameCount));
-
-        // Enable/disable buttons based on counts
-        applyAllNewButton.setEnabled(newCount > 0);
-        reviewConflictsButton.setEnabled(conflictCount > 0);
-
-        // Sort: CONFLICT first, then by address
-        List<ConflictEntry> sortedConflicts = new ArrayList<>(conflicts);
-        sortedConflicts.sort((a, b) -> {
-            if (a.getAction() == ConflictAction.CONFLICT && b.getAction() != ConflictAction.CONFLICT) {
-                return -1;
-            }
-            if (a.getAction() != ConflictAction.CONFLICT && b.getAction() == ConflictAction.CONFLICT) {
-                return 1;
+        List<ConflictEntry> sorted = new ArrayList<>(conflicts);
+        sorted.sort((a, b) -> {
+            int aRank = a.getAction() == ConflictAction.NEW ? 0 : a.getAction() == ConflictAction.CONFLICT ? 1 : 2;
+            int bRank = b.getAction() == ConflictAction.NEW ? 0 : b.getAction() == ConflictAction.CONFLICT ? 1 : 2;
+            if (aRank != bRank) {
+                return Integer.compare(aRank, bRank);
             }
             return Long.compare(a.getAddress(), b.getAddress());
         });
 
-        currentConflicts.addAll(sortedConflicts);
-        refreshConflictTable(currentConflicts);
-
-        // Show summary page
-        showSummaryPage();
-    }
-
-    private String formatStorageInfo(Symbol symbol) {
-        if (symbol == null) {
-            return "";
-        }
-
-        String symType = symbol.getSymbolType();
-        if (!"variable".equals(symType)) {
-            return "func";
-        }
-
-        java.util.Map<String, Object> metadata = symbol.getMetadata();
-        if (metadata == null) {
-            return "variable";
-        }
-
-        String storageClass = (String) metadata.get("storage_class");
-        String scope = (String) metadata.get("scope");
-
-        if ("parameter".equals(storageClass)) {
-            Object idx = metadata.get("parameter_index");
-            String reg = (String) metadata.get("register");
-            String idxStr = idx != null ? idx.toString() : "?";
-            if (reg != null) {
-                return String.format("param[%s] (%s)", idxStr, reg);
-            }
-            return String.format("param[%s]", idxStr);
-        } else if ("stack".equals(storageClass)) {
-            Object offsetObj = metadata.get("stack_offset");
-            if (offsetObj != null) {
-                int offset = ((Number) offsetObj).intValue();
-                String sign = offset >= 0 ? "+" : "";
-                return String.format("local [%s0x%x]", sign, Math.abs(offset));
-            }
-            return "local [stack]";
-        } else if ("register".equals(storageClass)) {
-            String reg = (String) metadata.get("register");
-            return reg != null ? String.format("local (%s)", reg) : "local (reg)";
-        } else if ("local".equals(scope)) {
-            return "local";
-        }
-
-        return "global";
-    }
-
-    private void refreshConflictTable(List<ConflictEntry> conflicts) {
-        conflictTableModel.setRowCount(0);
-        displayedConflicts = new ArrayList<>(conflicts);
-        for (ConflictEntry conflict : displayedConflicts) {
-            String storageInfo = formatStorageInfo(conflict.getRemoteSymbol());
+        for (ConflictEntry conflict : sorted) {
+            boolean selected = conflict.getAction() != ConflictAction.SAME;
+            conflict.setSelected(selected);
             conflictTableModel.addRow(new Object[]{
-                    conflict.isSelected(),
+                    selected,
                     conflict.getAddressHex(),
-                    storageInfo,
+                    formatStorageInfo(conflict),
                     conflict.getLocalNameDisplay(),
                     conflict.getRemoteNameDisplay(),
                     conflict.getAction().getValue().toUpperCase()
             });
+            displayedConflicts.add(conflict);
         }
+
+        applyAllNewButton.setEnabled(newCount > 0 || graphPreviewData != null);
+        updateSelectedCounts();
+    }
+
+    private String formatStorageInfo(ConflictEntry conflict) {
+        if (conflict == null || conflict.getRemoteSymbol() == null || conflict.getRemoteSymbol().getMetadata() == null) {
+            return conflict != null && conflict.getRemoteSymbol() != null ? conflict.getRemoteSymbol().getSymbolType() : "";
+        }
+        if (!"variable".equals(conflict.getRemoteSymbol().getSymbolType())) {
+            return conflict.getRemoteSymbol().getSymbolType();
+        }
+        Map<String, Object> metadata = conflict.getRemoteSymbol().getMetadata();
+        String storageClass = (String) metadata.get("storage_class");
+        if ("parameter".equals(storageClass)) {
+            return "parameter";
+        }
+        if ("stack".equals(storageClass)) {
+            return "local [stack]";
+        }
+        if ("register".equals(storageClass)) {
+            return "local (reg)";
+        }
+        return "variable";
     }
 
     public void setGraphPreviewData(GraphExport export, int nodes, int edges, int communities) {
-        graphPreviewData = export;
-        graphPreviewNodes = nodes;
-        graphPreviewEdges = edges;
-        graphPreviewCommunities = communities;
-        updateGraphLabels();
+        this.graphPreviewData = export;
+        this.graphPreviewNodes = nodes;
+        this.graphPreviewEdges = edges;
+        summaryGraphNodesLabel.setText("Graph Nodes: " + nodes);
+        summaryGraphEdgesLabel.setText("Graph Edges: " + edges);
+        summaryGraphVersionLabel.setText("Version: " + (fetchVersionCombo.getSelectedItem() != null ? fetchVersionCombo.getSelectedItem() : "-"));
     }
 
     public GraphExport getGraphPreviewData() {
         return graphPreviewData;
     }
 
-    public boolean hasGraphPreviewData() {
-        return graphPreviewData != null;
-    }
-
     public String getGraphMergePolicy() {
         return graphMergePolicy;
     }
 
-    private void updateGraphLabels() {
-        boolean hasGraph = graphPreviewData != null;
-        summaryGraphLabel.setText(hasGraph ? "Graph data available for merge" : "No graph data selected");
-        summaryGraphNodesLabel.setText("Nodes: " + graphPreviewNodes);
-        summaryGraphEdgesLabel.setText("Edges: " + graphPreviewEdges);
-        summaryGraphCommunitiesLabel.setText("Communities: " + graphPreviewCommunities);
-
-        if (detailsGraphLabel != null) {
-            detailsGraphLabel.setText(hasGraph ? "Graph data available for merge" : "No graph data available");
-            detailsGraphNodesLabel.setText("Nodes: " + graphPreviewNodes);
-            detailsGraphEdgesLabel.setText("Edges: " + graphPreviewEdges);
-            detailsGraphCommunitiesLabel.setText("Communities: " + graphPreviewCommunities);
-            if (detailsGraphPolicyLabel != null) {
-                detailsGraphPolicyLabel.setText("Selected policy: " + getMergePolicyLabel());
-            }
-        }
-    }
-
     public void clearConflicts() {
-        resetWizard();
-    }
-
-    // === Wizard navigation methods ===
-
-    private void resetWizard() {
         conflictTableModel.setRowCount(0);
-        currentConflicts.clear();
         displayedConflicts.clear();
-        pullStatusLabel.setText("");
-        summaryNewCount.setText("0");
-        summaryConflictCount.setText("0");
-        summarySameCount.setText("0");
-        summaryGraphLabel.setText("No graph data selected");
         graphPreviewData = null;
         graphPreviewNodes = 0;
         graphPreviewEdges = 0;
-        graphPreviewCommunities = 0;
-        graphMergePolicy = MERGE_POLICY_UPSERT;
-        syncMergePolicySelections();
-        updateGraphLabels();
-        if (detailsTabs != null) {
-            detailsTabs.setSelectedIndex(0);
-        }
-        wizardLayout.show(wizardPanel, PAGE_INITIAL);
+        summaryNewCountLabel.setText("New: 0");
+        summaryConflictCountLabel.setText("Conflicts: 0");
+        summarySameCountLabel.setText("Same: 0");
+        summarySelectedCountLabel.setText("Selected: 0");
+        summaryGraphNodesLabel.setText("Graph Nodes: 0");
+        summaryGraphEdgesLabel.setText("Graph Edges: 0");
+        summaryGraphVersionLabel.setText("Version: -");
+        hidePullProgress();
+        pullStatusLabel.setText("");
     }
 
-    private void showSummaryPage() {
-        wizardLayout.show(wizardPanel, PAGE_SUMMARY);
-    }
-
-    private void showDetailsPage() {
-        refreshConflictTable(currentConflicts);
-        // Show all conflicts in the table
-        if (detailsTabs != null) {
-            detailsTabs.setSelectedIndex(0);
-        }
-        wizardLayout.show(wizardPanel, PAGE_DETAILS);
-    }
-
-    private void showConflictsOnly() {
-        List<ConflictEntry> conflictOnly = new ArrayList<>();
-        for (ConflictEntry conflict : currentConflicts) {
-            if (conflict.getAction() == ConflictAction.CONFLICT) {
-                conflictOnly.add(conflict);
-            }
-        }
-        refreshConflictTable(conflictOnly);
-        if (detailsTabs != null) {
-            detailsTabs.setSelectedIndex(0);
-        }
-        wizardLayout.show(wizardPanel, PAGE_DETAILS);
-    }
-
-    /**
-     * Show the applying page with a status message.
-     */
-    public void showApplyingPage(String message) {
-        SwingUtilities.invokeLater(() -> {
-            applyProgressBar.setValue(0);
-            applyProgressLabel.setText(message != null ? message : "Starting...");
-            wizardLayout.show(wizardPanel, PAGE_APPLYING);
-        });
-    }
-
-    /**
-     * Update the apply progress bar.
-     */
-    public void updateApplyProgress(int current, int total, String message) {
-        SwingUtilities.invokeLater(() -> {
-            int percent = total > 0 ? (int) ((current * 100L) / total) : 0;
-            applyProgressBar.setValue(percent);
-            applyProgressBar.setString(String.format("%d/%d (%d%%)", current, total, percent));
-            if (message != null) {
-                applyProgressLabel.setText(message);
-            }
-        });
-    }
-
-    /**
-     * Hide the apply progress (no-op since we show complete page instead).
-     * Provided for API consistency with other progress patterns.
-     */
-    public void hideApplyProgress() {
-        // The wizard navigates directly to the complete page,
-        // so there's nothing to hide. This method exists for API consistency.
-    }
-
-    /**
-     * Show the complete page with results.
-     */
-    public void showCompletePage(String message, boolean success) {
-        SwingUtilities.invokeLater(() -> {
-            if (success) {
-                completeIcon.setText("✓");
-                completeIcon.setForeground(new Color(0, 128, 0));
-            } else {
-                completeIcon.setText("✗");
-                completeIcon.setForeground(Color.RED);
-            }
-            completeMessage.setText(message != null ? message : "Operation Complete");
-            wizardLayout.show(wizardPanel, PAGE_COMPLETE);
-        });
-    }
-
-    /**
-     * Get all conflicts with NEW action (for "Apply All New" button).
-     */
     public List<ConflictEntry> getAllNewConflicts() {
-        List<ConflictEntry> newItems = new ArrayList<>();
-        for (ConflictEntry conflict : currentConflicts) {
+        List<ConflictEntry> results = new ArrayList<>();
+        for (ConflictEntry conflict : displayedConflicts) {
             if (conflict.getAction() == ConflictAction.NEW) {
-                newItems.add(conflict);
+                results.add(conflict);
             }
         }
-        return newItems;
-    }
-
-    /**
-     * Set graph info in the summary page.
-     */
-    public void setSummaryGraphInfo(int nodes, int edges, int communities) {
-        graphPreviewNodes = nodes;
-        graphPreviewEdges = edges;
-        graphPreviewCommunities = communities;
-        updateGraphLabels();
-    }
-
-    public List<Long> getSelectedAddresses() {
-        List<Long> selected = new ArrayList<>();
-        for (int i = 0; i < conflictTableModel.getRowCount(); i++) {
-            Boolean isSelected = (Boolean) conflictTableModel.getValueAt(i, 0);
-            if (isSelected != null && isSelected && i < displayedConflicts.size()) {
-                selected.add(displayedConflicts.get(i).getAddress());
-            }
-        }
-        return selected;
+        return results;
     }
 
     public List<ConflictEntry> getSelectedConflicts() {
-        List<ConflictEntry> selected = new ArrayList<>();
-        for (int i = 0; i < conflictTableModel.getRowCount(); i++) {
-            Boolean isSelected = (Boolean) conflictTableModel.getValueAt(i, 0);
-            if (isSelected != null && isSelected && i < displayedConflicts.size()) {
-                selected.add(displayedConflicts.get(i));
+        List<ConflictEntry> results = new ArrayList<>();
+        for (int i = 0; i < conflictTableModel.getRowCount() && i < displayedConflicts.size(); i++) {
+            if (Boolean.TRUE.equals(conflictTableModel.getValueAt(i, 0))) {
+                results.add(displayedConflicts.get(i));
             }
         }
-        return selected;
+        return results;
     }
 
-    /**
-     * Get the current pull configuration settings.
-     *
-     * @return PullConfig with symbol types, min confidence, and graph option
-     */
+    public void showApplyingPage(String message) {
+        fetchProgressBar.setVisible(true);
+        fetchProgressBar.setValue(0);
+        fetchProgressLabel.setVisible(true);
+        fetchProgressLabel.setText(message != null ? message : "Applying...");
+    }
+
+    public void updateApplyProgress(int current, int total, String message) {
+        int percent = total > 0 ? (int) ((current * 100L) / total) : 0;
+        fetchProgressBar.setValue(percent);
+        fetchProgressLabel.setText(message != null ? message : percent + "%");
+    }
+
+    public void hideApplyProgress() {
+        fetchProgressBar.setVisible(false);
+        fetchProgressLabel.setVisible(false);
+    }
+
+    public void showCompletePage(String message, boolean success) {
+        setPullStatus(message != null ? message : "Operation complete", success);
+        hideApplyProgress();
+    }
+
+    public void setButtonsEnabled(boolean enabled) {
+        queryButton.setEnabled(enabled);
+        pullPreviewButton.setEnabled(enabled);
+        applyButton.setEnabled(enabled);
+        applyAllNewButton.setEnabled(enabled);
+        pushPreviewButton.setEnabled(enabled);
+        pushButton.setEnabled(enabled);
+        selectAllButton.setEnabled(enabled);
+        deselectAllButton.setEnabled(enabled);
+        selectNewButton.setEnabled(enabled);
+        selectConflictsButton.setEnabled(enabled);
+        invertSelectionButton.setEnabled(enabled);
+        pushSelectAllButton.setEnabled(enabled);
+        pushDeselectAllButton.setEnabled(enabled);
+        pushInvertSelectionButton.setEnabled(enabled);
+        openBinaryButton.setEnabled(enabled && openBinaryUrl != null && !openBinaryUrl.isEmpty());
+    }
+
     public PullConfig getPullConfig() {
         List<String> types = new ArrayList<>();
         if (pullFunctionsCheck.isSelected()) types.add("function");
         if (pullVariablesCheck.isSelected()) types.add("variable");
         if (pullTypesCheck.isSelected()) types.add("type");
         if (pullCommentsCheck.isSelected()) types.add("comment");
-
-        double minConfidence = confidenceSlider.getValue() / 100.0;
-        boolean includeGraph = pullGraphCheck.isSelected();
-
-        return new PullConfig(types, minConfidence, includeGraph);
+        Integer version = parseSelectedVersion((String) fetchVersionCombo.getSelectedItem());
+        return new PullConfig(types, confidenceSlider.getValue() / 100.0, pullGraphCheck.isSelected(),
+                version, fetchNameFilterField.getText().trim());
     }
 
-    /**
-     * Configuration for pull preview operation.
-     */
+    public PushConfig getPushConfig() {
+        List<String> types = new ArrayList<>();
+        if (pushFunctionsCheck.isSelected()) types.add("function");
+        if (pushVariablesCheck.isSelected()) types.add("variable");
+        if (pushTypesCheck.isSelected()) types.add("type");
+        if (pushCommentsCheck.isSelected()) types.add("comment");
+        return new PushConfig(
+                fullBinaryRadio.isSelected() ? PushScope.FULL_BINARY.getValue() : PushScope.CURRENT_FUNCTION.getValue(),
+                types,
+                pushNameFilterField.getText().trim(),
+                pushGraphCheck.isSelected(),
+                "Private".equals(pushVisibilityCombo.getSelectedItem()) ? "private" : "public");
+    }
+
+    private Integer parseSelectedVersion(String label) {
+        if (label == null || label.isEmpty() || !label.startsWith("v")) {
+            return null;
+        }
+        String digits = label.substring(1).split(" ")[0];
+        try {
+            return Integer.parseInt(digits);
+        } catch (NumberFormatException e) {
+            return null;
+        }
+    }
+
+    public void setPushPreview(List<Map<String, Object>> symbols, Map<String, Object> graphData, int nodes, int edges) {
+        pushPreviewSymbols.clear();
+        pushPreviewSymbols.addAll(symbols);
+        pushGraphData = graphData;
+        pushGraphNodes = nodes;
+        pushGraphEdges = edges;
+        pushPreviewTableModel.setRowCount(0);
+
+        for (Map<String, Object> symbol : symbols) {
+            long address = parseAddress(symbol.get("address"));
+            String name = (String) symbol.getOrDefault("name", symbol.getOrDefault("content", "<unnamed>"));
+            String type = (String) symbol.getOrDefault("symbol_type", "function");
+            double confidence = symbol.get("confidence") instanceof Number
+                    ? ((Number) symbol.get("confidence")).doubleValue()
+                    : 0.0;
+            String provenance = (String) symbol.getOrDefault("provenance", "unknown");
+            pushPreviewTableModel.addRow(new Object[]{
+                    true,
+                    String.format("0x%x", address),
+                    type,
+                    name,
+                    String.format("%.2f", confidence),
+                    provenance
+            });
+        }
+
+        pushMatchingCountLabel.setText("Matching: " + symbols.size());
+        pushGraphNodesLabel.setText("Graph Nodes: " + nodes);
+        pushGraphEdgesLabel.setText("Graph Edges: " + edges);
+        updateSelectedCounts();
+    }
+
+    public List<Map<String, Object>> getSelectedPushSymbols() {
+        List<Map<String, Object>> results = new ArrayList<>();
+        for (int i = 0; i < pushPreviewTableModel.getRowCount() && i < pushPreviewSymbols.size(); i++) {
+            if (Boolean.TRUE.equals(pushPreviewTableModel.getValueAt(i, 0))) {
+                results.add(pushPreviewSymbols.get(i));
+            }
+        }
+        return results;
+    }
+
+    public Map<String, Object> getPushGraphData() {
+        return pushGraphData;
+    }
+
+    private long parseAddress(Object value) {
+        if (value instanceof Number) {
+            return ((Number) value).longValue();
+        }
+        if (value instanceof String) {
+            String text = ((String) value).trim();
+            try {
+                if (text.startsWith("0x") || text.startsWith("0X")) {
+                    return Long.parseUnsignedLong(text.substring(2), 16);
+                }
+                return Long.parseLong(text);
+            } catch (NumberFormatException ignored) {
+            }
+        }
+        return 0L;
+    }
+
     public static class PullConfig {
         private final List<String> symbolTypes;
         private final double minConfidence;
         private final boolean includeGraph;
+        private final Integer version;
+        private final String nameFilter;
 
-        public PullConfig(List<String> symbolTypes, double minConfidence, boolean includeGraph) {
+        public PullConfig(List<String> symbolTypes, double minConfidence, boolean includeGraph,
+                          Integer version, String nameFilter) {
             this.symbolTypes = symbolTypes;
             this.minConfidence = minConfidence;
             this.includeGraph = includeGraph;
+            this.version = version;
+            this.nameFilter = nameFilter;
         }
 
         public List<String> getSymbolTypes() { return symbolTypes; }
         public double getMinConfidence() { return minConfidence; }
         public boolean isIncludeGraph() { return includeGraph; }
+        public Integer getVersion() { return version; }
+        public String getNameFilter() { return nameFilter; }
     }
 
-    public void setButtonsEnabled(boolean enabled) {
-        queryButton.setEnabled(enabled);
-        pushButton.setEnabled(enabled);
-        pullPreviewButton.setEnabled(enabled);
-        applyButton.setEnabled(enabled);
-    }
+    public static class PushConfig {
+        private final String scope;
+        private final List<String> symbolTypes;
+        private final String nameFilter;
+        private final boolean pushGraph;
+        private final String visibility;
 
-    /**
-     * Custom cell renderer for the Action column.
-     */
-    private static class ActionCellRenderer extends JLabel implements TableCellRenderer {
-        private static final long serialVersionUID = 1L;
-
-        public ActionCellRenderer() {
-            setOpaque(true);
-            setHorizontalAlignment(CENTER);
+        public PushConfig(String scope, List<String> symbolTypes, String nameFilter,
+                          boolean pushGraph, String visibility) {
+            this.scope = scope;
+            this.symbolTypes = symbolTypes;
+            this.nameFilter = nameFilter;
+            this.pushGraph = pushGraph;
+            this.visibility = visibility;
         }
 
-        @Override
-        public Component getTableCellRendererComponent(JTable table, Object value,
-                boolean isSelected, boolean hasFocus, int row, int column) {
-
-            String action = value != null ? value.toString() : "";
-            setText(action);
-
-            if (isSelected) {
-                setBackground(table.getSelectionBackground());
-                setForeground(table.getSelectionForeground());
-            } else {
-                setBackground(table.getBackground());
-                switch (action) {
-                    case "CONFLICT":
-                        setForeground(Color.RED);
-                        break;
-                    case "NEW":
-                        setForeground(new Color(0, 128, 0));
-                        break;
-                    case "SAME":
-                        setForeground(Color.GRAY);
-                        break;
-                    default:
-                        setForeground(table.getForeground());
-                }
-            }
-
-            return this;
-        }
+        public String getScope() { return scope; }
+        public List<String> getSymbolTypes() { return symbolTypes; }
+        public String getNameFilter() { return nameFilter; }
+        public boolean isPushGraph() { return pushGraph; }
+        public String getVisibility() { return visibility; }
     }
 }

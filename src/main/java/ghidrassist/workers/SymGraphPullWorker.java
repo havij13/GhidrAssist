@@ -72,6 +72,8 @@ public class SymGraphPullWorker extends AnalysisWorker<SymGraphPullWorker.Result
     private final List<String> symbolTypes;
     private final double minConfidence;
     private final boolean includeGraph;
+    private final Integer version;
+    private final String nameFilter;
 
     /**
      * Create a new SymGraphPullWorker.
@@ -85,13 +87,16 @@ public class SymGraphPullWorker extends AnalysisWorker<SymGraphPullWorker.Result
      */
     public SymGraphPullWorker(Program program, SymGraphService symGraphService,
                                String sha256, List<String> symbolTypes,
-                               double minConfidence, boolean includeGraph) {
+                               double minConfidence, boolean includeGraph,
+                               Integer version, String nameFilter) {
         this.program = program;
         this.symGraphService = symGraphService;
         this.sha256 = sha256;
         this.symbolTypes = symbolTypes != null ? symbolTypes : new ArrayList<>();
         this.minConfidence = minConfidence;
         this.includeGraph = includeGraph;
+        this.version = version;
+        this.nameFilter = nameFilter != null ? nameFilter.trim().toLowerCase() : "";
     }
 
     @Override
@@ -113,7 +118,13 @@ public class SymGraphPullWorker extends AnalysisWorker<SymGraphPullWorker.Result
                 int progress = (int) ((i * 60L) / Math.max(totalTypes, 1));
                 publishProgress(progress, 100, "Fetching " + symType + " symbols...");
 
-                List<Symbol> remoteSymbols = symGraphService.getSymbols(sha256, symType);
+                List<Symbol> remoteSymbols = symGraphService.getSymbols(sha256, symType, version);
+                if (!nameFilter.isEmpty()) {
+                    remoteSymbols.removeIf(symbol -> {
+                        String displayName = symbol != null ? symbol.getDisplayName() : null;
+                        return displayName == null || !displayName.toLowerCase().contains(nameFilter);
+                    });
+                }
                 allRemoteSymbols.addAll(remoteSymbols);
                 Msg.info(this, "Fetched " + remoteSymbols.size() + " " + symType + " symbols from API");
             }
@@ -131,7 +142,7 @@ public class SymGraphPullWorker extends AnalysisWorker<SymGraphPullWorker.Result
 
             if (includeGraph) {
                 publishProgress(60, 100, "Fetching graph data...");
-                graphExport = symGraphService.exportGraph(sha256);
+                graphExport = symGraphService.exportGraph(sha256, version);
                 if (graphExport != null) {
                     graphNodes = graphExport.getNodes().size();
                     graphEdges = graphExport.getEdges().size();

@@ -40,6 +40,8 @@ public class SymGraphController {
     private SymGraphApplyWorker applyWorker;
     private SymGraphPullWorker pullWorker;
     private Map<String, Long> externalAddressMap;
+    private final List<Map<String, Object>> pushPreviewSymbols = new ArrayList<>();
+    private Map<String, Object> pushPreviewGraphData;
     private String pendingPushScope;
     private boolean pendingPushSymbols;
     private boolean pendingPushGraph;
@@ -78,31 +80,38 @@ public class SymGraphController {
 
         symGraphTab.setQueryStatus("Checking...", false);
         symGraphTab.hideStats();
+        symGraphTab.setOpenBinaryUrl(null);
         symGraphTab.setButtonsEnabled(false);
 
         Task task = new Task("Query SymGraph", true, true, false) {
             @Override
             public void run(TaskMonitor monitor) {
                 try {
-                    QueryResult result = symGraphService.queryBinary(sha256);
+                    QueryResult result = symGraphService.queryBinary(sha256, null, true);
 
                     SwingUtilities.invokeLater(() -> {
                         symGraphTab.setButtonsEnabled(true);
                         if (result.getError() != null) {
                             symGraphTab.setQueryStatus("Error: " + result.getError(), false);
+                            symGraphTab.setOpenBinaryUrl(null);
                         } else if (result.isExists()) {
                             symGraphTab.setQueryStatus("Found in SymGraph", true);
+                            symGraphTab.setOpenBinaryUrl(symGraphService.getBinaryUrl(sha256));
                             if (result.getStats() != null) {
                                 BinaryStats stats = result.getStats();
                                 symGraphTab.setStats(
                                     stats.getSymbolCount(),
                                     stats.getFunctionCount(),
                                     stats.getGraphNodeCount(),
-                                    stats.getLastQueriedAt()
+                                    stats.getLastQueriedAt(),
+                                    result.getRevisions(),
+                                    result.getLatestRevision(),
+                                    result.getSelectedRevision()
                                 );
                             }
                         } else {
                             symGraphTab.setQueryStatus("Not found in SymGraph", false);
+                            symGraphTab.setOpenBinaryUrl(null);
                             symGraphTab.hideStats();
                         }
                     });
@@ -111,6 +120,7 @@ public class SymGraphController {
                     SwingUtilities.invokeLater(() -> {
                         symGraphTab.setButtonsEnabled(true);
                         symGraphTab.setQueryStatus("Error: " + e.getMessage(), false);
+                        symGraphTab.setOpenBinaryUrl(null);
                     });
                 }
             }
@@ -123,7 +133,56 @@ public class SymGraphController {
     /**
      * Handle SymGraph push request.
      */
-    public void handlePush(String scope, boolean pushSymbols, boolean pushGraph, String visibility) {
+    public void handlePushPreview() {
+        if (symGraphTab == null) {
+            Msg.showError(this, null, "Error", "SymGraph tab not initialized");
+            return;
+        }
+
+        String sha256 = getProgramSHA256();
+        if (sha256 == null) {
+            Msg.showInfo(this, symGraphTab, "No Binary", "No binary loaded or unable to compute hash.");
+            return;
+        }
+
+        SymGraphTab.PushConfig pushConfig = symGraphTab.getPushConfig();
+        String scope = pushConfig.getScope();
+        List<String> selectedTypes = pushConfig.getSymbolTypes();
+        String nameFilter = pushConfig.getNameFilter() != null ? pushConfig.getNameFilter().trim().toLowerCase() : "";
+        boolean includeGraph = pushConfig.isPushGraph();
+
+        List<Map<String, Object>> symbols = collectLocalSymbols(scope);
+        if (selectedTypes.isEmpty()) {
+            symbols.clear();
+        } else {
+            symbols.removeIf(symbol -> !matchesPushTypeFilter(symbol, selectedTypes));
+        }
+        if (!nameFilter.isEmpty()) {
+            symbols.removeIf(symbol -> !matchesNameFilter(symbol, nameFilter));
+        }
+
+        if (includeGraph) {
+            externalAddressMap = buildExternalAddressMap();
+        }
+        Map<String, Object> graphData = includeGraph ? collectLocalGraph(scope) : null;
+        int graphNodes = graphData != null ? getCollectionSize(graphData.get("nodes")) : 0;
+        int graphEdges = graphData != null ? getCollectionSize(graphData.get("edges")) : 0;
+
+        pushPreviewSymbols.clear();
+        pushPreviewSymbols.addAll(symbols);
+        pushPreviewGraphData = graphData;
+        symGraphTab.setPushPreview(symbols, graphData, graphNodes, graphEdges);
+
+        List<String> parts = new ArrayList<>();
+        parts.add(symbols.size() + " symbols ready");
+        if (graphData != null) {
+            parts.add(graphNodes + " nodes");
+            parts.add(graphEdges + " edges");
+        }
+        symGraphTab.setPushStatus("Preview ready: " + String.join(", ", parts), true);
+    }
+
+    public void handlePush(String scope, Boolean pushSymbols, Boolean pushGraph, String visibility) {
         if (symGraphTab == null || symGraphService == null) {
             Msg.showError(this, null, "Error", "SymGraph tab not initialized");
             return;
@@ -141,10 +200,22 @@ public class SymGraphController {
             return;
         }
 
-        pendingPushScope = scope;
-        pendingPushSymbols = pushSymbols;
-        pendingPushGraph = pushGraph;
-        pendingPushVisibility = visibility;
+        SymGraphTab.PushConfig pushConfig = symGraphTab.getPushConfig();
+        String resolvedScope = scope != null ? scope : pushConfig.getScope();
+        String resolvedVisibility = visibility != null ? visibility : pushConfig.getVisibility();
+        boolean useGraph = pushGraph != null ? pushGraph : pushConfig.isPushGraph();
+        List<Map<String, Object>> selectedSymbols = symGraphTab.getSelectedPushSymbols();
+        Map<String, Object> graphData = useGraph ? pushPreviewGraphData : null;
+
+        if (selectedSymbols.isEmpty() && graphData == null) {
+            symGraphTab.setPushStatus("Preview the push and select at least one row first", false);
+            return;
+        }
+
+        pendingPushScope = resolvedScope;
+        pendingPushSymbols = pushSymbols != null ? pushSymbols : !selectedSymbols.isEmpty();
+        pendingPushGraph = graphData != null;
+        pendingPushVisibility = resolvedVisibility;
 
         // Use atomic boolean for cancellation
         final java.util.concurrent.atomic.AtomicBoolean cancelled = new java.util.concurrent.atomic.AtomicBoolean(false);
@@ -169,18 +240,18 @@ public class SymGraphController {
         };
 
         // Run in background thread (no modal dialog)
+        final List<Map<String, Object>> symbolsToPush = new ArrayList<>(selectedSymbols);
+        final Map<String, Object> graphDataToPush = graphData;
+        final String scopeForPush = resolvedScope;
+        final String visibilityForPush = resolvedVisibility;
         Thread pushThread = new Thread(() -> {
             try {
-                List<Map<String, Object>> symbols = new ArrayList<>();
-                Map<String, Object> graphData = null;
-
                 // Build PLT/thunk address map up front so it's available for both symbol and graph collection
                 externalAddressMap = buildExternalAddressMap();
 
-                if (pushSymbols) {
-                    SwingUtilities.invokeLater(() -> symGraphTab.updatePushProgress(0, 100, "Collecting symbols..."));
-                    symbols = collectLocalSymbols(scope);
-                    Msg.info(this, "Collected " + symbols.size() + " symbols to push");
+                if (cancelled.get()) {
+                    handlePushCancelled();
+                    return;
                 }
 
                 if (cancelled.get()) {
@@ -188,17 +259,7 @@ public class SymGraphController {
                     return;
                 }
 
-                if (pushGraph) {
-                    SwingUtilities.invokeLater(() -> symGraphTab.updatePushProgress(0, 100, "Collecting graph data..."));
-                    graphData = collectLocalGraph(scope);
-                }
-
-                if (cancelled.get()) {
-                    handlePushCancelled();
-                    return;
-                }
-
-                if (symbols.isEmpty() && graphData == null) {
+                if (symbolsToPush.isEmpty() && graphDataToPush == null) {
                     SwingUtilities.invokeLater(() -> {
                         symGraphTab.hidePushProgress();
                         symGraphTab.setButtonsEnabled(true);
@@ -208,7 +269,7 @@ public class SymGraphController {
                 }
 
                 PushResult totalResult = PushResult.success(0, 0, 0);
-                PushResult revisionResult = symGraphService.createBinaryRevision(sha256, visibility);
+                PushResult revisionResult = symGraphService.createBinaryRevision(sha256, visibilityForPush);
                 if (!revisionResult.isSuccess()) {
                     final PushResult failureResult = revisionResult;
                     SwingUtilities.invokeLater(() -> handlePushFailure(failureResult));
@@ -218,9 +279,9 @@ public class SymGraphController {
                 totalResult.setBinaryRevision(targetRevision);
 
                 // Push symbols in chunks with progress
-                if (!symbols.isEmpty()) {
+                if (!symbolsToPush.isEmpty()) {
                     PushResult symbolResult = symGraphService.pushSymbolsChunked(
-                        sha256, symbols, targetRevision, progressCallback);
+                        sha256, symbolsToPush, targetRevision, progressCallback);
                     if (!symbolResult.isSuccess()) {
                         final PushResult failureResult = symbolResult;
                         SwingUtilities.invokeLater(() -> handlePushFailure(failureResult));
@@ -235,9 +296,9 @@ public class SymGraphController {
                 }
 
                 // Push graph in chunks with progress
-                if (graphData != null) {
+                if (graphDataToPush != null) {
                     PushResult graphResult = symGraphService.importGraphChunked(
-                        sha256, graphData, targetRevision, progressCallback);
+                        sha256, graphDataToPush, targetRevision, progressCallback);
                     if (!graphResult.isSuccess()) {
                         final PushResult failureResult = graphResult;
                         SwingUtilities.invokeLater(() -> handlePushFailure(failureResult));
@@ -351,6 +412,8 @@ public class SymGraphController {
         List<String> symbolTypes = pullConfig.getSymbolTypes();
         double minConfidence = pullConfig.getMinConfidence();
         boolean includeGraph = pullConfig.isIncludeGraph();
+        Integer version = pullConfig.getVersion();
+        String nameFilter = pullConfig.getNameFilter();
 
         if (symbolTypes.isEmpty()) {
             Msg.showInfo(this, symGraphTab, "No Types Selected", "Select at least one symbol type to pull.");
@@ -368,7 +431,9 @@ public class SymGraphController {
             sha256,
             symbolTypes,
             minConfidence,
-            includeGraph
+            includeGraph,
+            version,
+            nameFilter
         );
 
         setupPullWorkerCallbacks(pullWorker);
@@ -605,10 +670,66 @@ public class SymGraphController {
         if (plugin.getCurrentProgram() != null) {
             String name = plugin.getCurrentProgram().getName();
             String sha256 = getProgramSHA256();
-            symGraphTab.setBinaryInfo(name, sha256);
+            symGraphTab.setBinaryInfo(name, sha256, buildLocalSummary(sha256));
         } else {
             symGraphTab.setBinaryInfo(null, null);
         }
+    }
+
+    private boolean matchesPushTypeFilter(Map<String, Object> symbol, List<String> selectedTypes) {
+        Object symbolTypeValue = symbol.get("symbol_type");
+        if (!(symbolTypeValue instanceof String)) {
+            return false;
+        }
+        String symbolType = ((String) symbolTypeValue).toLowerCase();
+        if (selectedTypes.contains(symbolType)) {
+            return true;
+        }
+        return "type".equals(symbolType) || "enum".equals(symbolType) || "struct".equals(symbolType)
+                ? selectedTypes.contains("type")
+                : false;
+    }
+
+    private boolean matchesNameFilter(Map<String, Object> symbol, String nameFilter) {
+        Object name = symbol.get("name");
+        if (name instanceof String && ((String) name).toLowerCase().contains(nameFilter)) {
+            return true;
+        }
+        Object content = symbol.get("content");
+        return content instanceof String && ((String) content).toLowerCase().contains(nameFilter);
+    }
+
+    private int getCollectionSize(Object value) {
+        if (value instanceof List) {
+            return ((List<?>) value).size();
+        }
+        return 0;
+    }
+
+    private String buildLocalSummary(String sha256) {
+        if (plugin.getCurrentProgram() == null) {
+            return "No binary loaded";
+        }
+
+        List<String> parts = new ArrayList<>();
+        try {
+            int functionCount = plugin.getCurrentProgram().getFunctionManager().getFunctionCount();
+            parts.add(String.format("%,d functions", functionCount));
+        } catch (Exception ignored) {
+        }
+
+        if (sha256 != null && analysisDB != null) {
+            try {
+                BinaryKnowledgeGraph graph = analysisDB.getKnowledgeGraph(sha256);
+                if (graph != null && graph.getNodeCount() > 0) {
+                    parts.add(String.format("%,d graph nodes", graph.getNodeCount()));
+                    parts.add(String.format("%,d graph edges", graph.getEdgeCount()));
+                }
+            } catch (Exception ignored) {
+            }
+        }
+
+        return parts.isEmpty() ? "Binary metadata available" : String.join(" | ", parts);
     }
 
     // ==== Helper Methods ====

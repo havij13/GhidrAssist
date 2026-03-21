@@ -80,6 +80,32 @@ public class SymGraphModels {
     }
 
     /**
+     * Accessible binary revision metadata.
+     */
+    public static class BinaryRevision {
+        private int version;
+        private String createdAt;
+        private String visibility;
+        private boolean latest;
+        private String ownerUsername;
+
+        public int getVersion() { return version; }
+        public void setVersion(int version) { this.version = version; }
+        public String getCreatedAt() { return createdAt; }
+        public void setCreatedAt(String createdAt) { this.createdAt = createdAt; }
+        public String getVisibility() { return visibility; }
+        public void setVisibility(String visibility) { this.visibility = visibility; }
+        public boolean isLatest() { return latest; }
+        public void setLatest(boolean latest) { this.latest = latest; }
+        public String getOwnerUsername() { return ownerUsername; }
+        public void setOwnerUsername(String ownerUsername) { this.ownerUsername = ownerUsername; }
+
+        public String getDisplayLabel() {
+            return latest ? "v" + version + " (Latest)" : "v" + version;
+        }
+    }
+
+    /**
      * A symbol from SymGraph.
      */
     public static class Symbol {
@@ -285,6 +311,9 @@ public class SymGraphModels {
     public static class QueryResult {
         private boolean exists;
         private BinaryStats stats;
+        private List<BinaryRevision> revisions = new ArrayList<>();
+        private Integer latestRevision;
+        private Integer selectedRevision;
         private String error;
 
         public QueryResult() {}
@@ -293,6 +322,20 @@ public class SymGraphModels {
             QueryResult result = new QueryResult();
             result.exists = true;
             result.stats = stats;
+            return result;
+        }
+
+        public static QueryResult found(
+                BinaryStats stats,
+                List<BinaryRevision> revisions,
+                Integer latestRevision,
+                Integer selectedRevision) {
+            QueryResult result = new QueryResult();
+            result.exists = true;
+            result.stats = stats;
+            result.revisions = revisions != null ? revisions : new ArrayList<>();
+            result.latestRevision = latestRevision;
+            result.selectedRevision = selectedRevision;
             return result;
         }
 
@@ -313,6 +356,12 @@ public class SymGraphModels {
         public void setExists(boolean exists) { this.exists = exists; }
         public BinaryStats getStats() { return stats; }
         public void setStats(BinaryStats stats) { this.stats = stats; }
+        public List<BinaryRevision> getRevisions() { return revisions; }
+        public void setRevisions(List<BinaryRevision> revisions) { this.revisions = revisions; }
+        public Integer getLatestRevision() { return latestRevision; }
+        public void setLatestRevision(Integer latestRevision) { this.latestRevision = latestRevision; }
+        public Integer getSelectedRevision() { return selectedRevision; }
+        public void setSelectedRevision(Integer selectedRevision) { this.selectedRevision = selectedRevision; }
         public String getError() { return error; }
         public void setError(String error) { this.error = error; }
     }

@@ -2568,6 +2568,20 @@ public class TabController {
     }
 
     /**
+     * Build a local push preview before executing a SymGraph push.
+     */
+    public void handleSymGraphPushPreview() {
+        symGraphController.handlePushPreview();
+    }
+
+    /**
+     * Execute the selected SymGraph push preview.
+     */
+    public void handleSymGraphExecutePush() {
+        symGraphController.handlePush(null, null, null, null);
+    }
+
+    /**
      * Handle SymGraph pull preview request.
      * Delegates to SymGraphController.
      */
