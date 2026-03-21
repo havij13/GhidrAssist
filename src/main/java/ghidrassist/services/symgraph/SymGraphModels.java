@@ -242,6 +242,66 @@ public class SymGraphModels {
     }
 
     /**
+     * Document summary for list views.
+     */
+    public static class DocumentSummary {
+        private String id;
+        private String documentIdentityId;
+        private int version;
+        private String title;
+        private String docType;
+        private int contentSizeBytes;
+        private String createdAt;
+
+        public String getId() { return id; }
+        public void setId(String id) { this.id = id; }
+        public String getDocumentIdentityId() { return documentIdentityId; }
+        public void setDocumentIdentityId(String documentIdentityId) { this.documentIdentityId = documentIdentityId; }
+        public int getVersion() { return version; }
+        public void setVersion(int version) { this.version = version; }
+        public String getTitle() { return title; }
+        public void setTitle(String title) { this.title = title; }
+        public String getDocType() { return docType; }
+        public void setDocType(String docType) { this.docType = docType; }
+        public int getContentSizeBytes() { return contentSizeBytes; }
+        public void setContentSizeBytes(int contentSizeBytes) { this.contentSizeBytes = contentSizeBytes; }
+        public String getCreatedAt() { return createdAt; }
+        public void setCreatedAt(String createdAt) { this.createdAt = createdAt; }
+    }
+
+    /**
+     * Full document with content.
+     */
+    public static class Document extends DocumentSummary {
+        private String content;
+
+        public String getContent() { return content; }
+        public void setContent(String content) { this.content = content; }
+    }
+
+    /**
+     * Result for a single pushed document.
+     */
+    public static class DocumentPushResult {
+        private String status;
+        private String documentIdentityId;
+        private int version;
+        private String message;
+        private Document document;
+
+        public String getStatus() { return status; }
+        public void setStatus(String status) { this.status = status; }
+        public String getDocumentIdentityId() { return documentIdentityId; }
+        public void setDocumentIdentityId(String documentIdentityId) { this.documentIdentityId = documentIdentityId; }
+        public int getVersion() { return version; }
+        public void setVersion(int version) { this.version = version; }
+        public String getMessage() { return message; }
+        public void setMessage(String message) { this.message = message; }
+        public Document getDocument() { return document; }
+        public void setDocument(Document document) { this.document = document; }
+    }
+
+    /**
      * An entry in the conflict resolution table.
      */
     public static class ConflictEntry {
@@ -374,7 +434,9 @@ public class SymGraphModels {
         private int symbolsPushed;
         private int nodesPushed;
         private int edgesPushed;
+        private int documentsPushed;
         private Integer binaryRevision;
+        private List<DocumentPushResult> documentResults;
         private String error;
         private String errorCode;
         private String requestedVisibility;
@@ -392,7 +454,9 @@ public class SymGraphModels {
             result.symbolsPushed = symbols;
             result.nodesPushed = nodes;
             result.edgesPushed = edges;
+            result.documentsPushed = 0;
             result.binaryRevision = binaryRevision;
+            result.documentResults = new ArrayList<>();
             return result;
         }
 
@@ -422,8 +486,16 @@ public class SymGraphModels {
         public void setNodesPushed(int nodesPushed) { this.nodesPushed = nodesPushed; }
         public int getEdgesPushed() { return edgesPushed; }
         public void setEdgesPushed(int edgesPushed) { this.edgesPushed = edgesPushed; }
+        public int getDocumentsPushed() { return documentsPushed; }
+        public void setDocumentsPushed(int documentsPushed) { this.documentsPushed = documentsPushed; }
         public Integer getBinaryRevision() { return binaryRevision; }
         public void setBinaryRevision(Integer binaryRevision) { this.binaryRevision = binaryRevision; }
+        public List<DocumentPushResult> getDocumentResults() {
+            return documentResults != null ? documentResults : new ArrayList<>();
+        }
+        public void setDocumentResults(List<DocumentPushResult> documentResults) {
+            this.documentResults = documentResults;
+        }
         public String getError() { return error; }
         public void setError(String error) { this.error = error; }
         public String getErrorCode() { return errorCode; }

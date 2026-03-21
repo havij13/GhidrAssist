@@ -1,6 +1,7 @@
 package ghidrassist.ui.tabs;
 
 import javax.swing.*;
+import javax.swing.event.TableModelEvent;
 import javax.swing.table.DefaultTableModel;
 import javax.swing.text.*;
 import javax.swing.text.html.HTML;
@@ -28,6 +29,14 @@ import ghidrassist.AnalysisDB;
 
 public class QueryTab extends JPanel {
     private static final long serialVersionUID = 1L;
+    private static final String[] CHAT_TYPE_LABELS = {
+        "Chat",
+        "General",
+        "Malware Report",
+        "Vulnerability Analysis",
+        "API Documentation",
+        "Notes"
+    };
     private final TabController controller;
     private final MarkdownHelper markdownHelper;
     private JTextPane responseTextPane;  // Changed from JEditorPane for better performance
@@ -129,11 +138,11 @@ public class QueryTab extends JPanel {
         contentPanel = new JPanel(contentLayout);
 
         // Initialize chat history table
-        chatHistoryModel = new DefaultTableModel(new Object[]{"Description", "Date"}, 0) {
+        chatHistoryModel = new DefaultTableModel(new Object[]{"Description", "Date", "Type"}, 0) {
             private static final long serialVersionUID = 1L;
             @Override
             public boolean isCellEditable(int row, int column) {
-                return column == 0; // Only description column is editable
+                return column == 0 || column == 2;
             }
         };
         
@@ -141,10 +150,13 @@ public class QueryTab extends JPanel {
         chatHistoryTable.setSelectionMode(ListSelectionModel.MULTIPLE_INTERVAL_SELECTION);
         chatHistoryTable.setRowHeight(20);
         chatHistoryTable.setTableHeader(null); // Completely remove header row
+        chatHistoryTable.getColumnModel().getColumn(2).setCellEditor(
+                new DefaultCellEditor(new JComboBox<>(CHAT_TYPE_LABELS)));
         
         // Set column widths
-        chatHistoryTable.getColumnModel().getColumn(0).setPreferredWidth(150); // Description
-        chatHistoryTable.getColumnModel().getColumn(1).setPreferredWidth(150); // Date
+        chatHistoryTable.getColumnModel().getColumn(0).setPreferredWidth(180); // Description
+        chatHistoryTable.getColumnModel().getColumn(1).setPreferredWidth(130); // Date
+        chatHistoryTable.getColumnModel().getColumn(2).setPreferredWidth(160); // Type
     }
 
     private void layoutComponents() {
@@ -286,11 +298,18 @@ public class QueryTab extends JPanel {
         
         // Auto-save when focus changes from description field
         chatHistoryModel.addTableModelListener(e -> {
-            if (e.getColumn() == 0) { // Description column changed
-                int row = e.getFirstRow();
-                if (row >= 0) {
+            if (e.getType() != TableModelEvent.UPDATE) {
+                return;
+            }
+
+            int row = e.getFirstRow();
+            if (row >= 0) {
+                if (e.getColumn() == 0) {
                     String newDescription = (String) chatHistoryModel.getValueAt(row, 0);
                     controller.handleChatDescriptionUpdate(row, newDescription);
+                } else if (e.getColumn() == 2) {
+                    String newType = (String) chatHistoryModel.getValueAt(row, 2);
+                    controller.handleChatTypeUpdate(row, newType);
                 }
             }
         });
@@ -691,10 +710,32 @@ public class QueryTab extends JPanel {
         
         for (AnalysisDB.ChatSession session : sessions) {
             // Convert SQL Timestamp to Date and format in local timezone
-            Date localDate = new Date(session.getLastUpdate().getTime());
-            String formattedDate = dateFormat.format(localDate);
-            chatHistoryModel.addRow(new Object[]{session.getDescription(), formattedDate});
+            String formattedDate = "-";
+            if (session.getLastUpdate() != null) {
+                Date localDate = new Date(session.getLastUpdate().getTime());
+                formattedDate = dateFormat.format(localDate);
+            }
+            chatHistoryModel.addRow(new Object[]{
+                session.getDescription(),
+                formattedDate,
+                toDisplayChatType(session.getChatType())
+            });
         }
+    }
+
+    private String toDisplayChatType(String chatType) {
+        if (chatType == null) {
+            return "Chat";
+        }
+
+        return switch (chatType) {
+            case "general" -> "General";
+            case "malware_report" -> "Malware Report";
+            case "vuln_analysis" -> "Vulnerability Analysis";
+            case "api_doc", "protocol_spec" -> "API Documentation";
+            case "notes" -> "Notes";
+            default -> "Chat";
+        };
     }
     
     /**

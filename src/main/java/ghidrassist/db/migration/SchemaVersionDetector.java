@@ -26,8 +26,8 @@ public class SchemaVersionDetector {
     /** Graph-RAG with security columns, without user_edited */
     public static final int VERSION_GRAPHRAG_SECURITY = 3;
 
-    /** Current full schema with user_edited column */
-    public static final int VERSION_CURRENT = 4;
+    /** Current full schema with document chat metadata */
+    public static final int VERSION_CURRENT = 8;
 
     private final Connection connection;
 
@@ -108,6 +108,10 @@ public class SchemaVersionDetector {
 
         if (!graphNodeColumns.contains("user_edited")) {
             return VERSION_GRAPHRAG_SECURITY;
+        }
+
+        if (!tableExists("GHDocumentChatMetadata")) {
+            return 7;
         }
 
         return VERSION_CURRENT;

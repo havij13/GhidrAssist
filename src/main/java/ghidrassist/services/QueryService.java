@@ -10,6 +10,7 @@ import ghidrassist.chat.message.MessageRepository;
 import ghidrassist.chat.message.MessageStore;
 import ghidrassist.chat.message.ThreadSafeMessageStore;
 import ghidrassist.chat.persistence.ChatHistoryDAO;
+import ghidrassist.chat.persistence.ChatHistoryDAO.DocumentChatMetadata;
 import ghidrassist.chat.persistence.SqliteTransactionManager;
 import ghidrassist.chat.persistence.TransactionManager;
 import ghidrassist.chat.session.ChatSession;
@@ -22,10 +23,13 @@ import ghidrassist.tools.native_.DocumentToolProvider;
 import ghidrassist.tools.native_.NativeToolManager;
 import ghidrassist.tools.registry.ToolRegistry;
 import ghidrassist.graphrag.GraphRAGService;
+import ghidrassist.services.symgraph.SymGraphModels.Document;
 
 import java.sql.Timestamp;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -40,6 +44,13 @@ import java.util.regex.Pattern;
  * - RoleNormalizer for consistent role handling
  */
 public class QueryService {
+    private static final String CHAT_TYPE_CHAT = "chat";
+    private static final String CHAT_TYPE_GENERAL = "general";
+    private static final String CHAT_TYPE_MALWARE_REPORT = "malware_report";
+    private static final String CHAT_TYPE_VULNERABILITY_ANALYSIS = "vuln_analysis";
+    private static final String CHAT_TYPE_API_DOCUMENTATION = "api_doc";
+    private static final String CHAT_TYPE_NOTES = "notes";
+    private static final String DEFAULT_DOCUMENT_DOC_TYPE = "notes";
 
     private final GhidrAssistPlugin plugin;
     private final AnalysisDB analysisDB;  // Keep for ReAct and backward compatibility
@@ -51,6 +62,7 @@ public class QueryService {
     private final ChatSessionManager sessionManager;
     private final MessageRepository messageRepository;
     private final ChatSessionRepository sessionRepository;
+    private final ChatHistoryDAO chatHistoryDAO;
     private NativeToolManager nativeToolManager;
 
     public QueryService(GhidrAssistPlugin plugin) {
@@ -72,6 +84,7 @@ public class QueryService {
         ChatHistoryDAO dao = new ChatHistoryDAO(transactionManager);
 
         this.messageStore = new ThreadSafeMessageStore();
+        this.chatHistoryDAO = dao;
         this.messageRepository = dao;
         this.sessionRepository = dao;
         this.sessionManager = new ChatSessionManager(sessionRepository, messageRepository, messageStore);
@@ -515,10 +528,12 @@ public class QueryService {
         List<ChatSession> sessions = sessionManager.getSessions(programHash);
         java.util.List<AnalysisDB.ChatSession> legacySessions = new java.util.ArrayList<>();
         for (ChatSession session : sessions) {
+            DocumentChatMetadata metadata = chatHistoryDAO.getDocumentChatMetadata(session.getId());
             legacySessions.add(new AnalysisDB.ChatSession(
                 session.getId(),
                 session.getDescription(),
-                session.getLastUpdate()
+                session.getLastUpdate(),
+                resolveChatType(metadata)
             ));
         }
         return legacySessions;
@@ -586,6 +601,22 @@ public class QueryService {
         sessionManager.updateSessionDescription(sessionId, description);
     }
 
+    public boolean updateChatType(int sessionId, String chatType) {
+        String programHash = getProgramHash();
+        if (programHash == null || sessionId == ChatSessionManager.NO_SESSION) {
+            return false;
+        }
+
+        String normalizedType = normalizeChatType(chatType);
+        DocumentChatMetadata metadata = chatHistoryDAO.getDocumentChatMetadata(sessionId);
+        metadata.setDocumentChat(isDocumentType(normalizedType));
+        metadata.setDocType(normalizedType);
+        if (metadata.getSourceSha256() == null) {
+            metadata.setSourceSha256(programHash);
+        }
+        return chatHistoryDAO.upsertDocumentChatMetadata(sessionId, metadata);
+    }
+
     /**
      * Get current session ID
      */
@@ -632,12 +663,106 @@ public class QueryService {
 
         int sessionId = sessionManager.createDetachedSession(programHash, title);
         if (sessionId != ChatSessionManager.NO_SESSION) {
-            // Save the content as an assistant message
-            PersistedChatMessage msg = new PersistedChatMessage(
-                    null, "assistant", content, new Timestamp(System.currentTimeMillis()), 0);
-            messageRepository.saveMessage(programHash, sessionId, msg);
+            saveDocumentChatContent(programHash, sessionId, title, content, CHAT_TYPE_NOTES, null, 1);
         }
         return sessionId;
+    }
+
+    public int upsertSymGraphDocumentChat(Document document) {
+        String programHash = getProgramHash();
+        if (programHash == null || document == null || document.getDocumentIdentityId() == null) {
+            return -1;
+        }
+
+        Integer existingSessionId = chatHistoryDAO.findSessionIdByDocumentIdentity(
+                programHash, document.getDocumentIdentityId());
+        int sessionId;
+        if (existingSessionId != null) {
+            sessionId = existingSessionId;
+            sessionManager.updateSessionDescription(sessionId, document.getTitle());
+            saveDocumentChatContent(
+                    programHash,
+                    sessionId,
+                    document.getTitle(),
+                    document.getContent(),
+                    normalizeDocumentType(document.getDocType()),
+                    document.getDocumentIdentityId(),
+                    document.getVersion());
+        } else {
+            sessionId = sessionManager.createDetachedSession(programHash, document.getTitle());
+            if (sessionId == ChatSessionManager.NO_SESSION) {
+                return -1;
+            }
+            saveDocumentChatContent(
+                    programHash,
+                    sessionId,
+                    document.getTitle(),
+                    document.getContent(),
+                    normalizeDocumentType(document.getDocType()),
+                    document.getDocumentIdentityId(),
+                    document.getVersion());
+        }
+
+        return sessionId;
+    }
+
+    public List<Map<String, Object>> listDocumentPushCandidates() {
+        String programHash = getProgramHash();
+        List<Map<String, Object>> candidates = new ArrayList<>();
+        if (programHash == null) {
+            return candidates;
+        }
+
+        for (ChatSession session : sessionManager.getSessions(programHash)) {
+            DocumentChatMetadata metadata = chatHistoryDAO.getDocumentChatMetadata(session.getId());
+            String chatType = resolveChatType(metadata);
+            if (!isDocumentType(chatType)) {
+                continue;
+            }
+
+            String content = serializeDocumentChat(session.getId());
+            if (content == null || content.trim().isEmpty()) {
+                continue;
+            }
+
+            Map<String, Object> candidate = new HashMap<>();
+            candidate.put("session_id", session.getId());
+            candidate.put("title", session.getDescription());
+            candidate.put("content", content);
+            candidate.put("size_bytes", content.getBytes(java.nio.charset.StandardCharsets.UTF_8).length);
+            candidate.put("updated_at", session.getLastUpdate() != null ? session.getLastUpdate().toString() : null);
+            candidate.put("version", metadata.getDocumentVersion());
+            candidate.put("doc_type", chatType);
+            candidate.put("document_identity_id", metadata.getDocumentIdentityId());
+            candidates.add(candidate);
+        }
+
+        return candidates;
+    }
+
+    public boolean updateDocumentSyncMetadata(int sessionId, String documentIdentityId, Integer version, String docType) {
+        String programHash = getProgramHash();
+        if (programHash == null || sessionId == ChatSessionManager.NO_SESSION) {
+            return false;
+        }
+
+        DocumentChatMetadata metadata = chatHistoryDAO.getDocumentChatMetadata(sessionId);
+        String normalizedType = normalizeDocumentType(docType);
+        metadata.setDocumentChat(true);
+        metadata.setDocumentIdentityId(documentIdentityId);
+        metadata.setDocumentVersion(version);
+        metadata.setDocType(normalizedType);
+        metadata.setLastSyncedAt(System.currentTimeMillis());
+        metadata.setSourceSha256(programHash);
+        return chatHistoryDAO.upsertDocumentChatMetadata(sessionId, metadata);
+    }
+
+    public String serializeDocumentChat(int sessionId) {
+        String programHash = getProgramHash();
+        if (programHash == null || sessionId == ChatSessionManager.NO_SESSION) {
+            return null;
+        }
+        return serializeDocumentMessages(messageRepository.loadMessages(programHash, sessionId));
     }
 
     // ==================== Migration Support ====================
@@ -813,6 +938,109 @@ public class QueryService {
             return plugin.getCurrentProgram().getExecutableSHA256();
         }
         return null;
+    }
+
+    private void saveDocumentChatContent(
+            String programHash,
+            int sessionId,
+            String title,
+            String content,
+            String docType,
+            String documentIdentityId,
+            Integer version) {
+        PersistedChatMessage msg = new PersistedChatMessage(
+                null, "assistant", content != null ? content : "",
+                new Timestamp(System.currentTimeMillis()), 0);
+        msg.setProviderType("symgraph_document");
+        msg.setMessageType("standard");
+        List<PersistedChatMessage> messages = new ArrayList<>();
+        messages.add(msg);
+        messageRepository.replaceAllMessages(programHash, sessionId, messages);
+        sessionRepository.touchSession(sessionId);
+
+        String normalizedType = normalizeDocumentType(docType);
+        DocumentChatMetadata metadata = chatHistoryDAO.getDocumentChatMetadata(sessionId);
+        metadata.setDocumentChat(isDocumentType(normalizedType));
+        metadata.setDocumentIdentityId(documentIdentityId);
+        metadata.setDocumentVersion(version);
+        metadata.setDocType(normalizedType);
+        metadata.setLastSyncedAt(System.currentTimeMillis());
+        metadata.setSourceSha256(programHash);
+        chatHistoryDAO.upsertDocumentChatMetadata(sessionId, metadata);
+
+        if (sessionManager.getCurrentSessionId() == sessionId) {
+            messageStore.setMessages(messages);
+            sessionManager.updateSessionDescription(sessionId, title);
+        }
+    }
+
+    private String serializeDocumentMessages(List<PersistedChatMessage> messages) {
+        if (messages == null || messages.isEmpty()) {
+            return null;
+        }
+        if (messages.size() == 1) {
+            PersistedChatMessage only = messages.get(0);
+            if ("assistant".equalsIgnoreCase(only.getRole()) || "edited".equalsIgnoreCase(only.getRole())) {
+                return only.getContent();
+            }
+        }
+
+        StringBuilder markdown = new StringBuilder();
+        for (PersistedChatMessage message : messages) {
+            if (message == null) {
+                continue;
+            }
+            markdown.append(message.getRoleHeader()).append("\n");
+            if (message.getContent() != null) {
+                markdown.append(message.getContent());
+            }
+            markdown.append("\n\n");
+        }
+        return markdown.toString().trim();
+    }
+
+    private String resolveChatType(DocumentChatMetadata metadata) {
+        if (metadata == null) {
+            return CHAT_TYPE_CHAT;
+        }
+
+        String storedType = normalizeStoredChatType(metadata.getDocType());
+        if (metadata.isDocumentChat()) {
+            return CHAT_TYPE_CHAT.equals(storedType) ? DEFAULT_DOCUMENT_DOC_TYPE : storedType;
+        }
+        return storedType;
+    }
+
+    private String normalizeDocumentType(String docType) {
+        String normalized = normalizeStoredChatType(docType);
+        return CHAT_TYPE_CHAT.equals(normalized) ? DEFAULT_DOCUMENT_DOC_TYPE : normalized;
+    }
+
+    private String normalizeChatType(String chatType) {
+        return normalizeStoredChatType(chatType);
+    }
+
+    private String normalizeStoredChatType(String chatType) {
+        if (chatType == null) {
+            return CHAT_TYPE_CHAT;
+        }
+
+        String normalized = chatType.trim().toLowerCase();
+        return switch (normalized) {
+            case "chat" -> CHAT_TYPE_CHAT;
+            case "general" -> CHAT_TYPE_GENERAL;
+            case "malware report", "malware_report" -> CHAT_TYPE_MALWARE_REPORT;
+            case "vulnerability analysis", "vulnerability_analysis", "vuln_analysis" ->
+                    CHAT_TYPE_VULNERABILITY_ANALYSIS;
+            case "api documentation", "api_documentation", "api_doc", "protocol_spec" ->
+                    CHAT_TYPE_API_DOCUMENTATION;
+            case "notes" -> CHAT_TYPE_NOTES;
+            default -> CHAT_TYPE_CHAT;
+        };
+    }
+
+    private boolean isDocumentType(String chatType) {
+        return !CHAT_TYPE_CHAT.equals(normalizeStoredChatType(chatType));
     }
 
     private PersistedChatMessage getLastMessage() {

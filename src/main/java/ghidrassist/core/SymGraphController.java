@@ -13,6 +13,7 @@ import ghidrassist.GhidrAssistPlugin;
 import ghidrassist.graphrag.BinaryKnowledgeGraph;
 import ghidrassist.graphrag.nodes.KnowledgeNode;
 import ghidrassist.graphrag.nodes.NodeType;
+import ghidrassist.services.QueryService;
 import ghidrassist.services.symgraph.SymGraphService;
 import ghidrassist.services.symgraph.SymGraphModels.*;
 import ghidrassist.ui.tabs.SymGraphTab;
@@ -35,21 +36,33 @@ public class SymGraphController {
 
     private final GhidrAssistPlugin plugin;
     private final AnalysisDB analysisDB;
+    private final QueryService queryService;
+    private final Runnable refreshChatHistoryCallback;
     private SymGraphService symGraphService;
     private SymGraphTab symGraphTab;
     private SymGraphApplyWorker applyWorker;
     private SymGraphPullWorker pullWorker;
     private Map<String, Long> externalAddressMap;
     private final List<Map<String, Object>> pushPreviewSymbols = new ArrayList<>();
+    private final List<Map<String, Object>> pushPreviewDocuments = new ArrayList<>();
     private Map<String, Object> pushPreviewGraphData;
+    private List<Map<String, Object>> pendingPushDocuments = new ArrayList<>();
+    private List<DocumentSummary> pendingApplyDocuments = new ArrayList<>();
     private String pendingPushScope;
     private boolean pendingPushSymbols;
     private boolean pendingPushGraph;
     private String pendingPushVisibility = "public";
+    private String pendingApplyBaseMessage;
 
-    public SymGraphController(GhidrAssistPlugin plugin, AnalysisDB analysisDB) {
+    public SymGraphController(
+            GhidrAssistPlugin plugin,
+            AnalysisDB analysisDB,
+            QueryService queryService,
+            Runnable refreshChatHistoryCallback) {
         this.plugin = plugin;
         this.analysisDB = analysisDB;
+        this.queryService = queryService;
+        this.refreshChatHistoryCallback = refreshChatHistoryCallback;
     }
 
     // ==== Tab Registration ====
@@ -160,6 +173,15 @@ public class SymGraphController {
         if (!nameFilter.isEmpty()) {
             symbols.removeIf(symbol -> !matchesNameFilter(symbol, nameFilter));
         }
+        List<Map<String, Object>> documents = queryService != null
+                ? queryService.listDocumentPushCandidates()
+                : new ArrayList<>();
+        if (!nameFilter.isEmpty()) {
+            documents.removeIf(document -> {
+                Object title = document.get("title");
+                return !(title instanceof String) || !((String) title).toLowerCase().contains(nameFilter);
+            });
+        }
 
         if (includeGraph) {
             externalAddressMap = buildExternalAddressMap();
@@ -170,11 +192,14 @@ public class SymGraphController {
 
         pushPreviewSymbols.clear();
         pushPreviewSymbols.addAll(symbols);
+        pushPreviewDocuments.clear();
+        pushPreviewDocuments.addAll(documents);
         pushPreviewGraphData = graphData;
-        symGraphTab.setPushPreview(symbols, graphData, graphNodes, graphEdges);
+        symGraphTab.setPushPreview(symbols, graphData, graphNodes, graphEdges, documents);
 
         List<String> parts = new ArrayList<>();
         parts.add(symbols.size() + " symbols ready");
+        parts.add(documents.size() + " documents ready");
         if (graphData != null) {
             parts.add(graphNodes + " nodes");
             parts.add(graphEdges + " edges");
@@ -205,9 +230,10 @@ public class SymGraphController {
         String resolvedVisibility = visibility != null ? visibility : pushConfig.getVisibility();
         boolean useGraph = pushGraph != null ? pushGraph : pushConfig.isPushGraph();
         List<Map<String, Object>> selectedSymbols = symGraphTab.getSelectedPushSymbols();
+        List<Map<String, Object>> selectedDocuments = symGraphTab.getSelectedPushDocuments();
         Map<String, Object> graphData = useGraph ? pushPreviewGraphData : null;
 
-        if (selectedSymbols.isEmpty() && graphData == null) {
+        if (selectedSymbols.isEmpty() && selectedDocuments.isEmpty() && graphData == null) {
             symGraphTab.setPushStatus("Preview the push and select at least one row first", false);
             return;
         }
@@ -216,6 +242,7 @@ public class SymGraphController {
         pendingPushSymbols = pushSymbols != null ? pushSymbols : !selectedSymbols.isEmpty();
         pendingPushGraph = graphData != null;
         pendingPushVisibility = resolvedVisibility;
+        pendingPushDocuments = new ArrayList<>(selectedDocuments);
 
         // Use atomic boolean for cancellation
         final java.util.concurrent.atomic.AtomicBoolean cancelled = new java.util.concurrent.atomic.AtomicBoolean(false);
@@ -241,8 +268,8 @@ public class SymGraphController {
 
         // Run in background thread (no modal dialog)
         final List<Map<String, Object>> symbolsToPush = new ArrayList<>(selectedSymbols);
+        final List<Map<String, Object>> documentsToPush = new ArrayList<>(selectedDocuments);
         final Map<String, Object> graphDataToPush = graphData;
-        final String scopeForPush = resolvedScope;
         final String visibilityForPush = resolvedVisibility;
         Thread pushThread = new Thread(() -> {
             try {
@@ -259,7 +286,7 @@ public class SymGraphController {
                     return;
                 }
 
-                if (symbolsToPush.isEmpty() && graphDataToPush == null) {
+                if (symbolsToPush.isEmpty() && documentsToPush.isEmpty() && graphDataToPush == null) {
                     SwingUtilities.invokeLater(() -> {
                         symGraphTab.hidePushProgress();
                         symGraphTab.setButtonsEnabled(true);
@@ -313,6 +340,27 @@ public class SymGraphController {
                     return;
                 }
 
+                if (!documentsToPush.isEmpty()) {
+                    SwingUtilities.invokeLater(() -> symGraphTab.updatePushProgress(100, 100, "Pushing documents..."));
+                    PushResult documentResult = symGraphService.pushDocumentsBulk(
+                            sha256, documentsToPush, targetRevision, progressCallback);
+                    if (!documentResult.isSuccess()) {
+                        final PushResult failureResult = documentResult;
+                        SwingUtilities.invokeLater(() -> handlePushFailure(failureResult));
+                        return;
+                    }
+                    totalResult.setDocumentsPushed(documentResult.getDocumentsPushed());
+                    totalResult.setDocumentResults(documentResult.getDocumentResults());
+                    if (queryService != null) {
+                        updateLocalDocumentMetadata(documentsToPush, documentResult.getDocumentResults());
+                    }
+                }
+
+                if (cancelled.get()) {
+                    handlePushCancelled();
+                    return;
+                }
+
                 // Add fingerprints for debug symbol matching (BuildID for ELF, etc.)
                 SwingUtilities.invokeLater(() -> symGraphTab.updatePushProgress(100, 100, "Adding fingerprints..."));
                 addBinaryFingerprints(sha256);
@@ -326,10 +374,17 @@ public class SymGraphController {
                     if (result.getSymbolsPushed() > 0) parts.add(result.getSymbolsPushed() + " symbols");
                     if (result.getNodesPushed() > 0) parts.add(result.getNodesPushed() + " nodes");
                     if (result.getEdgesPushed() > 0) parts.add(result.getEdgesPushed() + " edges");
+                    if (result.getDocumentsPushed() > 0) parts.add(result.getDocumentsPushed() + " documents");
                     msg.append(parts.isEmpty() ? "complete" : String.join(", ", parts));
                     if (result.getBinaryRevision() != null) {
-                        msg.append(" to v").append(result.getBinaryRevision());
+                        if (result.getDocumentsPushed() > 0) {
+                            msg.append(" from v").append(result.getBinaryRevision())
+                                    .append(" (documents versioned separately)");
+                        } else {
+                            msg.append(" to v").append(result.getBinaryRevision());
+                        }
                     }
+                    pendingPushDocuments = new ArrayList<>();
                     symGraphTab.setPushStatus(msg.toString(), true);
                 });
             } catch (Exception e) {
@@ -338,6 +393,7 @@ public class SymGraphController {
                     symGraphTab.hidePushProgress();
                     symGraphTab.setButtonsEnabled(true);
                     symGraphTab.setPushStatus("Error: " + e.getMessage(), false);
+                    pendingPushDocuments = new ArrayList<>();
                 });
             }
         }, "SymGraph-Push-Worker");
@@ -348,6 +404,7 @@ public class SymGraphController {
     private void handlePushFailure(PushResult failureResult) {
         symGraphTab.hidePushProgress();
         symGraphTab.setButtonsEnabled(true);
+        pendingPushDocuments = new ArrayList<>();
 
         if ("visibility_quota_exceeded".equals(failureResult.getErrorCode())
                 && failureResult.getRequestedVisibility() != null
@@ -374,6 +431,7 @@ public class SymGraphController {
         SwingUtilities.invokeLater(() -> {
             symGraphTab.hidePushProgress();
             symGraphTab.setButtonsEnabled(true);
+            pendingPushDocuments = new ArrayList<>();
             symGraphTab.setPushStatus("Cancelled", false);
         });
     }
@@ -415,12 +473,13 @@ public class SymGraphController {
         Integer version = pullConfig.getVersion();
         String nameFilter = pullConfig.getNameFilter();
 
-        if (symbolTypes.isEmpty()) {
-            Msg.showInfo(this, symGraphTab, "No Types Selected", "Select at least one symbol type to pull.");
-            return;
+        if (symbolTypes.isEmpty() && !includeGraph) {
+            Msg.info(this, "Fetching documents-only preview from SymGraph: " + sha256);
+        } else if (symbolTypes.isEmpty()) {
+            Msg.info(this, "Fetching graph/documents preview from SymGraph: " + sha256);
+        } else {
+            Msg.info(this, "Fetching symbols from SymGraph: " + sha256 + " (types: " + symbolTypes + ")");
         }
-
-        Msg.info(this, "Fetching symbols from SymGraph: " + sha256 + " (types: " + symbolTypes + ")");
         symGraphTab.clearConflicts();
         symGraphTab.setGraphPreviewData(null, 0, 0, 0);
         symGraphTab.setButtonsEnabled(false);
@@ -458,25 +517,37 @@ public class SymGraphController {
                 symGraphTab.setPullStatus("Cancelled", false);
             } else if (result.error != null) {
                 symGraphTab.setGraphPreviewData(null, 0, 0, 0);
+                symGraphTab.populateFetchDocuments(new ArrayList<>());
                 symGraphTab.setPullStatus("Error: " + result.error, false);
-            } else if (result.conflicts.isEmpty() && result.graphExport == null) {
-                symGraphTab.setPullStatus("No symbols found", false);
             } else {
                 symGraphTab.setGraphPreviewData(result.graphExport, result.graphNodes,
                     result.graphEdges, result.graphCommunities);
                 symGraphTab.populateConflicts(result.conflicts);
+                symGraphTab.populateFetchDocuments(result.documents);
 
                 int conflictCount = (int) result.conflicts.stream()
                     .filter(c -> c.getAction() == ConflictAction.CONFLICT).count();
                 int newCount = (int) result.conflicts.stream()
                     .filter(c -> c.getAction() == ConflictAction.NEW).count();
-                String status = String.format("Found %d symbols (%d conflicts, %d new)",
-                    result.conflicts.size(), conflictCount, newCount);
+                String status;
+                if (result.conflicts.isEmpty() && result.graphExport == null && result.documents.isEmpty()) {
+                    status = "No symbols or documents found";
+                } else if (result.conflicts.isEmpty() && result.graphExport != null) {
+                    status = "No symbols found (graph data available)";
+                } else if (result.conflicts.isEmpty()) {
+                    status = "No symbols found";
+                } else {
+                    status = String.format("Found %d symbols (%d conflicts, %d new)",
+                            result.conflicts.size(), conflictCount, newCount);
+                }
                 if (result.conflicts.isEmpty() && result.graphExport != null) {
                     status = "No symbols found (graph data available)";
                 } else if (result.graphExport != null) {
                     status += String.format(" | Graph: %d nodes, %d edges, %d communities",
                         result.graphNodes, result.graphEdges, result.graphCommunities);
+                }
+                if (!result.documents.isEmpty()) {
+                    status += String.format(" | Documents: %d", result.documents.size());
                 }
                 symGraphTab.setPullStatus(status, true);
             }
@@ -494,6 +565,7 @@ public class SymGraphController {
             symGraphTab.hidePullProgress();
             symGraphTab.setButtonsEnabled(true);
             symGraphTab.setGraphPreviewData(null, 0, 0, 0);
+            symGraphTab.populateFetchDocuments(new ArrayList<>());
             symGraphTab.setPullStatus("Error: " + error, false);
         });
 
@@ -527,7 +599,8 @@ public class SymGraphController {
         }
 
         GraphExport graphExport = symGraphTab.getGraphPreviewData();
-        if (selectedConflicts.isEmpty() && graphExport == null) {
+        List<DocumentSummary> selectedDocuments = symGraphTab.getSelectedFetchDocuments();
+        if (selectedConflicts.isEmpty() && selectedDocuments.isEmpty() && graphExport == null) {
             symGraphTab.setPullStatus("No items selected", false);
             return;
         }
@@ -537,6 +610,14 @@ public class SymGraphController {
             symGraphTab.setPullStatus("Unable to resolve program hash", false);
             return;
         }
+
+        if (selectedConflicts.isEmpty() && graphExport == null) {
+            startDocumentApply(selectedDocuments, null);
+            return;
+        }
+
+        pendingApplyDocuments = new ArrayList<>(selectedDocuments);
+        pendingApplyBaseMessage = null;
 
         applyWorker = new SymGraphApplyWorker(
             plugin.getCurrentProgram(),
@@ -587,6 +668,8 @@ public class SymGraphController {
             symGraphTab.getGraphMergePolicy()
         );
 
+        pendingApplyDocuments = new ArrayList<>();
+        pendingApplyBaseMessage = null;
         setupApplyWorkerCallbacks(applyWorker, newConflicts.size());
         applyWorker.execute();
     }
@@ -604,9 +687,13 @@ public class SymGraphController {
         worker.setCompletedCallback(result -> {
             symGraphTab.hideApplyProgress();
             if (result.cancelled) {
+                pendingApplyDocuments = new ArrayList<>();
+                pendingApplyBaseMessage = null;
                 symGraphTab.showCompletePage(
                     String.format("Cancelled after applying %d symbols", result.symbolsApplied), false);
             } else if (result.error != null) {
+                pendingApplyDocuments = new ArrayList<>();
+                pendingApplyBaseMessage = null;
                 symGraphTab.showCompletePage("Error: " + result.error, false);
             } else {
                 StringBuilder message = new StringBuilder("Applied ");
@@ -625,19 +712,29 @@ public class SymGraphController {
                 } else {
                     message.append(String.join(", ", parts));
                 }
-                symGraphTab.showCompletePage(message.toString(), true);
+                if (!pendingApplyDocuments.isEmpty()) {
+                    pendingApplyBaseMessage = message.toString();
+                    startDocumentApply(new ArrayList<>(pendingApplyDocuments), pendingApplyBaseMessage);
+                } else {
+                    pendingApplyBaseMessage = null;
+                    symGraphTab.showCompletePage(message.toString(), true);
+                }
             }
         });
 
         // Cancelled callback - called on EDT
         worker.setCancelledCallback(() -> {
             symGraphTab.hideApplyProgress();
+            pendingApplyDocuments = new ArrayList<>();
+            pendingApplyBaseMessage = null;
             symGraphTab.showCompletePage("Apply cancelled", false);
         });
 
         // Failed callback - called on EDT
         worker.setFailedCallback(error -> {
             symGraphTab.hideApplyProgress();
+            pendingApplyDocuments = new ArrayList<>();
+            pendingApplyBaseMessage = null;
             symGraphTab.showCompletePage("Error: " + error, false);
         });
 
@@ -654,6 +751,114 @@ public class SymGraphController {
     public void cancelApply() {
         if (applyWorker != null && !applyWorker.isDone()) {
             applyWorker.requestCancel();
+        }
+    }
+
+    private void startDocumentApply(List<DocumentSummary> documents, String baseMessage) {
+        if (documents == null || documents.isEmpty()) {
+            if (baseMessage != null) {
+                symGraphTab.showCompletePage(baseMessage, true);
+            }
+            pendingApplyDocuments = new ArrayList<>();
+            pendingApplyBaseMessage = null;
+            return;
+        }
+
+        String sha256 = getProgramSHA256();
+        if (sha256 == null || queryService == null) {
+            symGraphTab.showCompletePage("Unable to import documents", false);
+            pendingApplyDocuments = new ArrayList<>();
+            pendingApplyBaseMessage = null;
+            return;
+        }
+
+        symGraphTab.showApplyingPage(String.format("Fetching %d documents...", documents.size()));
+        pendingApplyDocuments = new ArrayList<>(documents);
+        pendingApplyBaseMessage = baseMessage;
+
+        Thread documentThread = new Thread(() -> {
+            int imported = 0;
+            int failures = 0;
+            String lastError = null;
+
+            for (DocumentSummary summary : documents) {
+                try {
+                    Document document = symGraphService.getDocument(
+                            sha256, summary.getDocumentIdentityId(), summary.getVersion());
+                    if (document != null && queryService.upsertSymGraphDocumentChat(document) != -1) {
+                        imported++;
+                    } else {
+                        failures++;
+                    }
+                } catch (Exception e) {
+                    failures++;
+                    lastError = e.getMessage();
+                    Msg.warn(this, "Failed to fetch document " + summary.getDocumentIdentityId() + ": " + e.getMessage());
+                }
+            }
+
+            final int importedCount = imported;
+            final int failureCount = failures;
+            final String errorMessage = lastError;
+            SwingUtilities.invokeLater(() -> {
+                if (refreshChatHistoryCallback != null && importedCount > 0) {
+                    refreshChatHistoryCallback.run();
+                }
+                List<String> parts = new ArrayList<>();
+                if (baseMessage != null && !baseMessage.isEmpty() && !"Applied no changes".equals(baseMessage)) {
+                    parts.add(baseMessage);
+                }
+                if (importedCount > 0) {
+                    parts.add("Applied " + importedCount + " documents");
+                } else if (baseMessage == null) {
+                    parts.add("No documents applied");
+                }
+                if (failureCount > 0) {
+                    parts.add(failureCount + " document fetch failures");
+                }
+                pendingApplyDocuments = new ArrayList<>();
+                pendingApplyBaseMessage = null;
+                symGraphTab.showCompletePage(String.join(" | ", parts), failureCount == 0 || importedCount > 0);
+                if (failureCount > 0 && importedCount == 0 && errorMessage != null) {
+                    symGraphTab.setPullStatus("Error: " + errorMessage, false);
+                }
+            });
+        }, "SymGraph-Document-Apply");
+        documentThread.setDaemon(true);
+        documentThread.start();
+    }
+
+    private void updateLocalDocumentMetadata(
+            List<Map<String, Object>> selectedDocuments,
+            List<DocumentPushResult> results) {
+        if (queryService == null || selectedDocuments == null || results == null) {
+            return;
+        }
+
+        int count = Math.min(selectedDocuments.size(), results.size());
+        for (int i = 0; i < count; i++) {
+            Map<String, Object> localDocument = selectedDocuments.get(i);
+            DocumentPushResult result = results.get(i);
+            Object sessionId = localDocument.get("session_id");
+            if (!(sessionId instanceof Number)) {
+                continue;
+            }
+
+            String docType = result.getDocument() != null && result.getDocument().getDocType() != null
+                    ? result.getDocument().getDocType()
+                    : valueAsString(localDocument.get("doc_type"));
+            String documentIdentityId = result.getDocument() != null && result.getDocument().getDocumentIdentityId() != null
+                    ? result.getDocument().getDocumentIdentityId()
+                    : result.getDocumentIdentityId();
+            Integer version = result.getDocument() != null
+                    ? result.getDocument().getVersion()
+                    : result.getVersion();
+
+            queryService.updateDocumentSyncMetadata(
+                    ((Number) sessionId).intValue(),
+                    documentIdentityId,
+                    version,
+                    docType);
         }
     }
 
@@ -704,6 +909,10 @@ public class SymGraphController {
             return ((List<?>) value).size();
         }
         return 0;
+    }
+
+    private String valueAsString(Object value) {
+        return value != null ? value.toString() : null;
     }
 
     private String buildLocalSummary(String sha256) {

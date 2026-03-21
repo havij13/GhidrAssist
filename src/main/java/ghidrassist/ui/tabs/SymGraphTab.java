@@ -4,6 +4,7 @@ import ghidrassist.core.TabController;
 import ghidrassist.services.symgraph.SymGraphModels.BinaryRevision;
 import ghidrassist.services.symgraph.SymGraphModels.ConflictAction;
 import ghidrassist.services.symgraph.SymGraphModels.ConflictEntry;
+import ghidrassist.services.symgraph.SymGraphModels.DocumentSummary;
 import ghidrassist.services.symgraph.SymGraphModels.GraphExport;
 import ghidrassist.services.symgraph.SymGraphModels.PushScope;
 
@@ -24,7 +25,6 @@ public class SymGraphTab extends JPanel {
     private static final String MERGE_POLICY_UPSERT = "upsert";
     private static final String MERGE_POLICY_PREFER_LOCAL = "prefer_local";
     private static final String MERGE_POLICY_REPLACE = "replace";
-
     private final TabController controller;
 
     // Shared binary info
@@ -62,11 +62,14 @@ public class SymGraphTab extends JPanel {
     private JLabel summaryConflictCountLabel;
     private JLabel summarySameCountLabel;
     private JLabel summarySelectedCountLabel;
+    private JLabel summaryDocumentCountLabel;
     private JLabel summaryGraphNodesLabel;
     private JLabel summaryGraphEdgesLabel;
     private JLabel summaryGraphVersionLabel;
     private JTable conflictTable;
     private DefaultTableModel conflictTableModel;
+    private JTable fetchDocumentsTable;
+    private DefaultTableModel fetchDocumentsTableModel;
     private JButton selectAllButton;
     private JButton deselectAllButton;
     private JButton selectNewButton;
@@ -92,10 +95,13 @@ public class SymGraphTab extends JPanel {
     private JButton pushButton;
     private JLabel pushMatchingCountLabel;
     private JLabel pushSelectedCountLabel;
+    private JLabel pushDocumentsCountLabel;
     private JLabel pushGraphNodesLabel;
     private JLabel pushGraphEdgesLabel;
     private JTable pushPreviewTable;
     private DefaultTableModel pushPreviewTableModel;
+    private JTable pushDocumentsTable;
+    private DefaultTableModel pushDocumentsTableModel;
     private JButton pushSelectAllButton;
     private JButton pushDeselectAllButton;
     private JButton pushInvertSelectionButton;
@@ -106,7 +112,9 @@ public class SymGraphTab extends JPanel {
 
     // State
     private final List<ConflictEntry> displayedConflicts = new ArrayList<>();
+    private final List<DocumentSummary> displayedFetchDocuments = new ArrayList<>();
     private final List<Map<String, Object>> pushPreviewSymbols = new ArrayList<>();
+    private final List<Map<String, Object>> pushPreviewDocuments = new ArrayList<>();
     private GraphExport graphPreviewData;
     private int graphPreviewNodes;
     private int graphPreviewEdges;
@@ -186,7 +194,8 @@ public class SymGraphTab extends JPanel {
         summaryNewCountLabel = new JLabel("New: 0");
         summaryConflictCountLabel = new JLabel("Conflicts: 0");
         summarySameCountLabel = new JLabel("Same: 0");
-        summarySelectedCountLabel = new JLabel("Selected: 0");
+        summarySelectedCountLabel = new JLabel("Selected: 0 symbols / 0 docs");
+        summaryDocumentCountLabel = new JLabel("Documents: 0");
         summaryGraphNodesLabel = new JLabel("Graph Nodes: 0");
         summaryGraphEdgesLabel = new JLabel("Graph Edges: 0");
         summaryGraphVersionLabel = new JLabel("Version: -");
@@ -211,6 +220,19 @@ public class SymGraphTab extends JPanel {
             }
         };
         conflictTable = new JTable(conflictTableModel);
+        fetchDocumentsTableModel = new DefaultTableModel(
+                new Object[]{"Select", "Title", "Size", "Date", "Version"}, 0) {
+            private static final long serialVersionUID = 1L;
+            @Override
+            public Class<?> getColumnClass(int columnIndex) {
+                return columnIndex == 0 ? Boolean.class : String.class;
+            }
+            @Override
+            public boolean isCellEditable(int row, int column) {
+                return column == 0;
+            }
+        };
+        fetchDocumentsTable = new JTable(fetchDocumentsTableModel);
         selectAllButton = new JButton("Select All");
         deselectAllButton = new JButton("Deselect All");
         selectNewButton = new JButton("Select New");
@@ -234,7 +256,8 @@ public class SymGraphTab extends JPanel {
         pushPreviewButton = new JButton("Preview Push");
         pushButton = new JButton("Push Selected");
         pushMatchingCountLabel = new JLabel("Matching: 0");
-        pushSelectedCountLabel = new JLabel("Selected: 0");
+        pushSelectedCountLabel = new JLabel("Selected: 0 symbols / 0 docs");
+        pushDocumentsCountLabel = new JLabel("Documents: 0");
         pushGraphNodesLabel = new JLabel("Graph Nodes: 0");
         pushGraphEdgesLabel = new JLabel("Graph Edges: 0");
         pushProgressBar = new JProgressBar(0, 100);
@@ -258,6 +281,23 @@ public class SymGraphTab extends JPanel {
             }
         };
         pushPreviewTable = new JTable(pushPreviewTableModel);
+        pushDocumentsTableModel = new DefaultTableModel(
+                new Object[]{"Select", "Title", "Size", "Date", "Version", "Doc Type"}, 0) {
+            private static final long serialVersionUID = 1L;
+            @Override
+            public Class<?> getColumnClass(int columnIndex) {
+                return columnIndex == 0 ? Boolean.class : String.class;
+            }
+            @Override
+            public boolean isCellEditable(int row, int column) {
+                return column == 0 || column == 5;
+            }
+        };
+        pushDocumentsTable = new JTable(pushDocumentsTableModel);
+        JComboBox<String> docTypeCombo = new JComboBox<>(new String[]{
+                "General", "Malware Report", "Vulnerability Analysis", "API Documentation", "Notes"
+        });
+        pushDocumentsTable.getColumnModel().getColumn(5).setCellEditor(new DefaultCellEditor(docTypeCombo));
         pushSelectAllButton = new JButton("Select All");
         pushDeselectAllButton = new JButton("Deselect All");
         pushInvertSelectionButton = new JButton("Invert");
@@ -396,13 +436,30 @@ public class SymGraphTab extends JPanel {
         summary.add(summaryConflictCountLabel);
         summary.add(summarySameCountLabel);
         summary.add(summarySelectedCountLabel);
+        summary.add(summaryDocumentCountLabel);
         summary.add(summaryGraphNodesLabel);
         summary.add(summaryGraphEdgesLabel);
         summary.add(summaryGraphVersionLabel);
         center.add(summary, BorderLayout.NORTH);
 
         configureTable(conflictTable, 6, 110, 130, 90);
-        center.add(new JScrollPane(conflictTable), BorderLayout.CENTER);
+        configureDocumentTable(fetchDocumentsTable, false);
+
+        JPanel symbolsPanel = new JPanel(new BorderLayout(5, 5));
+        symbolsPanel.setBorder(BorderFactory.createTitledBorder("Symbols"));
+        JScrollPane symbolsScroll = new JScrollPane(conflictTable);
+        symbolsScroll.setPreferredSize(new Dimension(0, 280));
+        symbolsPanel.add(symbolsScroll, BorderLayout.CENTER);
+
+        JPanel documentsPanel = new JPanel(new BorderLayout(5, 5));
+        documentsPanel.setBorder(BorderFactory.createTitledBorder("Documents"));
+        JScrollPane documentsScroll = new JScrollPane(fetchDocumentsTable);
+        documentsScroll.setPreferredSize(new Dimension(0, 140));
+        documentsPanel.add(documentsScroll, BorderLayout.CENTER);
+
+        JSplitPane splitPane = new JSplitPane(JSplitPane.VERTICAL_SPLIT, symbolsPanel, documentsPanel);
+        splitPane.setResizeWeight(0.67);
+        center.add(splitPane, BorderLayout.CENTER);
 
         JPanel selectionRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 5, 0));
         selectionRow.add(selectAllButton);
@@ -470,12 +527,29 @@ public class SymGraphTab extends JPanel {
         summary.setBorder(BorderFactory.createEtchedBorder());
         summary.add(pushMatchingCountLabel);
         summary.add(pushSelectedCountLabel);
+        summary.add(pushDocumentsCountLabel);
         summary.add(pushGraphNodesLabel);
         summary.add(pushGraphEdgesLabel);
         center.add(summary, BorderLayout.NORTH);
 
         configureTable(pushPreviewTable, 6, 110, 100, 90);
-        center.add(new JScrollPane(pushPreviewTable), BorderLayout.CENTER);
+        configureDocumentTable(pushDocumentsTable, true);
+
+        JPanel symbolsPanel = new JPanel(new BorderLayout(5, 5));
+        symbolsPanel.setBorder(BorderFactory.createTitledBorder("Symbols"));
+        JScrollPane symbolsScroll = new JScrollPane(pushPreviewTable);
+        symbolsScroll.setPreferredSize(new Dimension(0, 280));
+        symbolsPanel.add(symbolsScroll, BorderLayout.CENTER);
+
+        JPanel documentsPanel = new JPanel(new BorderLayout(5, 5));
+        documentsPanel.setBorder(BorderFactory.createTitledBorder("Documents"));
+        JScrollPane documentsScroll = new JScrollPane(pushDocumentsTable);
+        documentsScroll.setPreferredSize(new Dimension(0, 140));
+        documentsPanel.add(documentsScroll, BorderLayout.CENTER);
+
+        JSplitPane splitPane = new JSplitPane(JSplitPane.VERTICAL_SPLIT, symbolsPanel, documentsPanel);
+        splitPane.setResizeWeight(0.67);
+        center.add(splitPane, BorderLayout.CENTER);
 
         JPanel selectionRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 5, 0));
         selectionRow.add(pushSelectAllButton);
@@ -506,6 +580,22 @@ public class SymGraphTab extends JPanel {
         table.getColumnModel().getColumn(2).setPreferredWidth(typeWidth);
         table.getColumnModel().getColumn(columns - 1).setMinWidth(70);
         table.getColumnModel().getColumn(columns - 1).setPreferredWidth(actionWidth);
+    }
+
+    private void configureDocumentTable(JTable table, boolean editableDocType) {
+        table.setSelectionMode(ListSelectionModel.MULTIPLE_INTERVAL_SELECTION);
+        table.setAutoResizeMode(JTable.AUTO_RESIZE_SUBSEQUENT_COLUMNS);
+        table.setFillsViewportHeight(true);
+        table.getColumnModel().getColumn(0).setMinWidth(50);
+        table.getColumnModel().getColumn(0).setMaxWidth(60);
+        table.getColumnModel().getColumn(2).setMinWidth(70);
+        table.getColumnModel().getColumn(2).setPreferredWidth(80);
+        table.getColumnModel().getColumn(4).setMinWidth(60);
+        table.getColumnModel().getColumn(4).setPreferredWidth(70);
+        if (editableDocType) {
+            table.getColumnModel().getColumn(5).setMinWidth(120);
+            table.getColumnModel().getColumn(5).setPreferredWidth(140);
+        }
     }
 
     private JPanel createMergePolicyPanel() {
@@ -542,21 +632,41 @@ public class SymGraphTab extends JPanel {
         });
         pullPreviewButton.addActionListener(e -> controller.handleSymGraphPullPreview());
         fetchResetButton.addActionListener(e -> clearConflicts());
-        selectAllButton.addActionListener(e -> setAllSelected(conflictTableModel, true));
-        deselectAllButton.addActionListener(e -> setAllSelected(conflictTableModel, false));
+        selectAllButton.addActionListener(e -> {
+            setAllSelected(conflictTableModel, true);
+            setAllSelected(fetchDocumentsTableModel, true);
+        });
+        deselectAllButton.addActionListener(e -> {
+            setAllSelected(conflictTableModel, false);
+            setAllSelected(fetchDocumentsTableModel, false);
+        });
         selectNewButton.addActionListener(e -> selectFetchAction(ConflictAction.NEW));
         selectConflictsButton.addActionListener(e -> selectFetchAction(ConflictAction.CONFLICT));
-        invertSelectionButton.addActionListener(e -> invertSelection(conflictTableModel));
+        invertSelectionButton.addActionListener(e -> {
+            invertSelection(conflictTableModel);
+            invertSelection(fetchDocumentsTableModel);
+        });
         applyAllNewButton.addActionListener(e -> controller.handleSymGraphApplyAllNew());
         applyButton.addActionListener(e -> controller.handleSymGraphApplySelected(getSelectedConflicts()));
         pushPreviewButton.addActionListener(e -> controller.handleSymGraphPushPreview());
         pushButton.addActionListener(e -> controller.handleSymGraphExecutePush());
-        pushSelectAllButton.addActionListener(e -> setAllSelected(pushPreviewTableModel, true));
-        pushDeselectAllButton.addActionListener(e -> setAllSelected(pushPreviewTableModel, false));
-        pushInvertSelectionButton.addActionListener(e -> invertSelection(pushPreviewTableModel));
+        pushSelectAllButton.addActionListener(e -> {
+            setAllSelected(pushPreviewTableModel, true);
+            setAllSelected(pushDocumentsTableModel, true);
+        });
+        pushDeselectAllButton.addActionListener(e -> {
+            setAllSelected(pushPreviewTableModel, false);
+            setAllSelected(pushDocumentsTableModel, false);
+        });
+        pushInvertSelectionButton.addActionListener(e -> {
+            invertSelection(pushPreviewTableModel);
+            invertSelection(pushDocumentsTableModel);
+        });
         confidenceSlider.addChangeListener(e -> confidenceValueLabel.setText(String.format("%.1f", confidenceSlider.getValue() / 100.0)));
         conflictTableModel.addTableModelListener(e -> updateSelectedCounts());
+        fetchDocumentsTableModel.addTableModelListener(e -> updateSelectedCounts());
         pushPreviewTableModel.addTableModelListener(e -> updateSelectedCounts());
+        pushDocumentsTableModel.addTableModelListener(e -> updateSelectedCounts());
     }
 
     private void setAllSelected(DefaultTableModel model, boolean selected) {
@@ -592,7 +702,15 @@ public class SymGraphTab extends JPanel {
                 selectedFetch++;
             }
         }
-        summarySelectedCountLabel.setText("Selected: " + selectedFetch);
+        int selectedFetchDocuments = 0;
+        for (int i = 0; i < fetchDocumentsTableModel.getRowCount(); i++) {
+            Boolean selected = (Boolean) fetchDocumentsTableModel.getValueAt(i, 0);
+            if (Boolean.TRUE.equals(selected)) {
+                selectedFetchDocuments++;
+            }
+        }
+        summarySelectedCountLabel.setText(
+                "Selected: " + selectedFetch + " symbols / " + selectedFetchDocuments + " docs");
 
         int selectedPush = 0;
         for (int i = 0; i < pushPreviewTableModel.getRowCount(); i++) {
@@ -601,7 +719,15 @@ public class SymGraphTab extends JPanel {
                 selectedPush++;
             }
         }
-        pushSelectedCountLabel.setText("Selected: " + selectedPush);
+        int selectedPushDocuments = 0;
+        for (int i = 0; i < pushDocumentsTableModel.getRowCount(); i++) {
+            Boolean selected = (Boolean) pushDocumentsTableModel.getValueAt(i, 0);
+            if (Boolean.TRUE.equals(selected)) {
+                selectedPushDocuments++;
+            }
+        }
+        pushSelectedCountLabel.setText(
+                "Selected: " + selectedPush + " symbols / " + selectedPushDocuments + " docs");
     }
 
     public void setBinaryInfo(String name, String sha256) {
@@ -790,6 +916,27 @@ public class SymGraphTab extends JPanel {
         updateSelectedCounts();
     }
 
+    public void populateFetchDocuments(List<DocumentSummary> documents) {
+        fetchDocumentsTableModel.setRowCount(0);
+        displayedFetchDocuments.clear();
+
+        if (documents != null) {
+            for (DocumentSummary document : documents) {
+                displayedFetchDocuments.add(document);
+                fetchDocumentsTableModel.addRow(new Object[]{
+                        true,
+                        document.getTitle(),
+                        formatSize(document.getContentSizeBytes()),
+                        formatDate(document.getCreatedAt()),
+                        formatVersion(document.getVersion())
+                });
+            }
+        }
+
+        summaryDocumentCountLabel.setText("Documents: " + displayedFetchDocuments.size());
+        updateSelectedCounts();
+    }
+
     private String formatStorageInfo(ConflictEntry conflict) {
         if (conflict == null || conflict.getRemoteSymbol() == null || conflict.getRemoteSymbol().getMetadata() == null) {
             return conflict != null && conflict.getRemoteSymbol() != null ? conflict.getRemoteSymbol().getSymbolType() : "";
@@ -831,13 +978,16 @@ public class SymGraphTab extends JPanel {
     public void clearConflicts() {
         conflictTableModel.setRowCount(0);
         displayedConflicts.clear();
+        fetchDocumentsTableModel.setRowCount(0);
+        displayedFetchDocuments.clear();
         graphPreviewData = null;
         graphPreviewNodes = 0;
         graphPreviewEdges = 0;
         summaryNewCountLabel.setText("New: 0");
         summaryConflictCountLabel.setText("Conflicts: 0");
         summarySameCountLabel.setText("Same: 0");
-        summarySelectedCountLabel.setText("Selected: 0");
+        summarySelectedCountLabel.setText("Selected: 0 symbols / 0 docs");
+        summaryDocumentCountLabel.setText("Documents: 0");
         summaryGraphNodesLabel.setText("Graph Nodes: 0");
         summaryGraphEdgesLabel.setText("Graph Edges: 0");
         summaryGraphVersionLabel.setText("Version: -");
@@ -860,6 +1010,16 @@ public class SymGraphTab extends JPanel {
         for (int i = 0; i < conflictTableModel.getRowCount() && i < displayedConflicts.size(); i++) {
             if (Boolean.TRUE.equals(conflictTableModel.getValueAt(i, 0))) {
                 results.add(displayedConflicts.get(i));
+            }
+        }
+        return results;
+    }
+
+    public List<DocumentSummary> getSelectedFetchDocuments() {
+        List<DocumentSummary> results = new ArrayList<>();
+        for (int i = 0; i < fetchDocumentsTableModel.getRowCount() && i < displayedFetchDocuments.size(); i++) {
+            if (Boolean.TRUE.equals(fetchDocumentsTableModel.getValueAt(i, 0))) {
+                results.add(displayedFetchDocuments.get(i));
             }
         }
         return results;
@@ -943,13 +1103,23 @@ public class SymGraphTab extends JPanel {
         }
     }
 
-    public void setPushPreview(List<Map<String, Object>> symbols, Map<String, Object> graphData, int nodes, int edges) {
+    public void setPushPreview(
+            List<Map<String, Object>> symbols,
+            Map<String, Object> graphData,
+            int nodes,
+            int edges,
+            List<Map<String, Object>> documents) {
         pushPreviewSymbols.clear();
         pushPreviewSymbols.addAll(symbols);
+        pushPreviewDocuments.clear();
+        if (documents != null) {
+            pushPreviewDocuments.addAll(documents);
+        }
         pushGraphData = graphData;
         pushGraphNodes = nodes;
         pushGraphEdges = edges;
         pushPreviewTableModel.setRowCount(0);
+        pushDocumentsTableModel.setRowCount(0);
 
         for (Map<String, Object> symbol : symbols) {
             long address = parseAddress(symbol.get("address"));
@@ -969,7 +1139,19 @@ public class SymGraphTab extends JPanel {
             });
         }
 
+        for (Map<String, Object> document : pushPreviewDocuments) {
+            pushDocumentsTableModel.addRow(new Object[]{
+                    true,
+                    document.getOrDefault("title", "Untitled"),
+                    formatSize(document.get("size_bytes")),
+                    formatDate(valueAsString(document.get("updated_at"))),
+                    formatVersion(document.get("version")),
+                    toDocumentTypeLabel(valueAsString(document.get("doc_type")))
+            });
+        }
+
         pushMatchingCountLabel.setText("Matching: " + symbols.size());
+        pushDocumentsCountLabel.setText("Documents: " + pushPreviewDocuments.size());
         pushGraphNodesLabel.setText("Graph Nodes: " + nodes);
         pushGraphEdgesLabel.setText("Graph Edges: " + edges);
         updateSelectedCounts();
@@ -983,6 +1165,46 @@ public class SymGraphTab extends JPanel {
             }
         }
         return results;
+    }
+
+    public List<Map<String, Object>> getSelectedPushDocuments() {
+        List<Map<String, Object>> results = new ArrayList<>();
+        for (int i = 0; i < pushDocumentsTableModel.getRowCount() && i < pushPreviewDocuments.size(); i++) {
+            if (Boolean.TRUE.equals(pushDocumentsTableModel.getValueAt(i, 0))) {
+                Map<String, Object> document = new java.util.HashMap<>(pushPreviewDocuments.get(i));
+                document.put("doc_type", toDocumentTypeValue((String) pushDocumentsTableModel.getValueAt(i, 5)));
+                results.add(document);
+            }
+        }
+        return results;
+    }
+
+    private String toDocumentTypeLabel(String docType) {
+        if (docType == null) {
+            return "Notes";
+        }
+
+        return switch (docType) {
+            case "general" -> "General";
+            case "malware_report" -> "Malware Report";
+            case "vuln_analysis" -> "Vulnerability Analysis";
+            case "api_doc", "protocol_spec" -> "API Documentation";
+            default -> "Notes";
+        };
+    }
+
+    private String toDocumentTypeValue(String label) {
+        if (label == null) {
+            return "notes";
+        }
+
+        return switch (label) {
+            case "General" -> "general";
+            case "Malware Report" -> "malware_report";
+            case "Vulnerability Analysis" -> "vuln_analysis";
+            case "API Documentation" -> "api_doc";
+            default -> "notes";
+        };
     }
 
     public Map<String, Object> getPushGraphData() {
@@ -1004,6 +1226,45 @@ public class SymGraphTab extends JPanel {
             }
         }
         return 0L;
+    }
+
+    private String formatSize(Object sizeValue) {
+        long size = 0;
+        if (sizeValue instanceof Number) {
+            size = ((Number) sizeValue).longValue();
+        } else if (sizeValue instanceof String) {
+            try {
+                size = Long.parseLong((String) sizeValue);
+            } catch (NumberFormatException ignored) {
+                return sizeValue.toString();
+            }
+        }
+        if (size >= 1024) {
+            return String.format("%.1f KB", size / 1024.0);
+        }
+        return size + " B";
+    }
+
+    private String formatVersion(Object versionValue) {
+        if (versionValue instanceof Number) {
+            return "v" + ((Number) versionValue).intValue();
+        }
+        if (versionValue instanceof String && !((String) versionValue).isEmpty()) {
+            String value = (String) versionValue;
+            return value.startsWith("v") ? value : "v" + value;
+        }
+        return "New";
+    }
+
+    private String formatDate(String value) {
+        if (value == null || value.isEmpty()) {
+            return "-";
+        }
+        return value.length() > 10 ? value.substring(0, 10) : value;
+    }
+
+    private String valueAsString(Object value) {
+        return value != null ? value.toString() : null;
     }
 
     public static class PullConfig {

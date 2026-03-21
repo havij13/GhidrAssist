@@ -571,6 +571,177 @@ public class SymGraphService {
     }
 
     /**
+     * List documents for a binary (authenticated).
+     */
+    public List<DocumentSummary> listDocuments(String sha256, Integer version) throws IOException, SymGraphAuthException {
+        checkAuthRequired();
+
+        HttpUrl.Builder urlBuilder = HttpUrl.parse(getApiUrl() + "/api/v1/binaries/" + sha256 + "/documents").newBuilder();
+        urlBuilder.addQueryParameter("page_size", "100");
+        if (version != null) {
+            urlBuilder.addQueryParameter("version", String.valueOf(version));
+        }
+        String url = urlBuilder.build().toString();
+        Msg.debug(this, TAG + ": Listing documents: " + url);
+
+        Request request = new Request.Builder()
+                .url(url)
+                .get()
+                .addHeader("Accept", "application/json")
+                .addHeader("X-API-Key", getApiKey())
+                .addHeader("User-Agent", "GhidrAssist-SymGraph/1.0")
+                .build();
+
+        try (Response response = client.newCall(request).execute()) {
+            if (response.code() == 401) {
+                throw new SymGraphAuthException("Invalid API key");
+            }
+            if (response.code() == 404) {
+                return new ArrayList<>();
+            }
+            if (!response.isSuccessful()) {
+                throw new IOException("Error listing documents: " + response.code());
+            }
+
+            String body = response.body().string();
+            JsonObject json = JsonParser.parseString(body).getAsJsonObject();
+            List<DocumentSummary> documents = new ArrayList<>();
+            if (!json.has("documents") || !json.get("documents").isJsonArray()) {
+                return documents;
+            }
+
+            for (JsonElement element : json.getAsJsonArray("documents")) {
+                if (!element.isJsonObject()) {
+                    continue;
+                }
+                documents.add(parseDocumentSummary(element.getAsJsonObject()));
+            }
+            return documents;
+        }
+    }
+
+    /**
+     * Get a single document with content (authenticated).
+     */
+    public Document getDocument(String sha256, String documentIdentityId, Integer version)
+            throws IOException, SymGraphAuthException {
+        checkAuthRequired();
+
+        HttpUrl.Builder urlBuilder = HttpUrl.parse(
+                getApiUrl() + "/api/v1/binaries/" + sha256 + "/documents/" + documentIdentityId).newBuilder();
+        if (version != null) {
+            urlBuilder.addQueryParameter("version", String.valueOf(version));
+        }
+        String url = urlBuilder.build().toString();
+        Msg.debug(this, TAG + ": Getting document: " + url);
+
+        Request request = new Request.Builder()
+                .url(url)
+                .get()
+                .addHeader("Accept", "application/json")
+                .addHeader("X-API-Key", getApiKey())
+                .addHeader("User-Agent", "GhidrAssist-SymGraph/1.0")
+                .build();
+
+        try (Response response = client.newCall(request).execute()) {
+            if (response.code() == 401) {
+                throw new SymGraphAuthException("Invalid API key");
+            }
+            if (response.code() == 404) {
+                return null;
+            }
+            if (!response.isSuccessful()) {
+                throw new IOException("Error getting document: " + response.code());
+            }
+
+            String body = response.body().string();
+            JsonObject json = JsonParser.parseString(body).getAsJsonObject();
+            return parseDocument(json);
+        }
+    }
+
+    /**
+     * Push documents in bulk (authenticated).
+     */
+    public PushResult pushDocumentsBulk(
+            String sha256,
+            List<Map<String, Object>> documents,
+            Integer baseVersion,
+            ProgressCallback progress) throws IOException, SymGraphAuthException {
+        checkAuthRequired();
+
+        if (documents == null || documents.isEmpty()) {
+            return PushResult.success(0, 0, 0, baseVersion);
+        }
+        if (progress != null && progress.isCancelled()) {
+            return PushResult.success(0, 0, 0, baseVersion);
+        }
+
+        HttpUrl.Builder urlBuilder = HttpUrl.parse(getApiUrl() + "/api/v1/binaries/" + sha256 + "/documents/bulk").newBuilder();
+        if (baseVersion != null) {
+            urlBuilder.addQueryParameter("base_version", String.valueOf(baseVersion));
+        }
+        HttpUrl url = urlBuilder.build();
+        Msg.debug(this, TAG + ": Pushing " + documents.size() + " documents to: " + url);
+
+        Map<String, Object> payload = new HashMap<>();
+        payload.put("documents", documents);
+
+        RequestBody body = RequestBody.create(gson.toJson(payload), JSON);
+        Request request = new Request.Builder()
+                .url(url)
+                .post(body)
+                .addHeader("Content-Type", "application/json")
+                .addHeader("Accept", "application/json")
+                .addHeader("X-API-Key", getApiKey())
+                .addHeader("User-Agent", "GhidrAssist-SymGraph/1.0")
+                .build();
+
+        try (Response response = executeWithRetry(request, progress)) {
+            if (response.code() == 401) {
+                throw new SymGraphAuthException("Invalid API key");
+            }
+            if (!response.isSuccessful()) {
+                return buildPushFailure("Error pushing documents", response);
+            }
+
+            String responseBody = response.body().string();
+            JsonObject json = JsonParser.parseString(responseBody).getAsJsonObject();
+            List<DocumentPushResult> results = new ArrayList<>();
+            int pushed = 0;
+
+            if (json.has("results") && json.get("results").isJsonArray()) {
+                for (JsonElement element : json.getAsJsonArray("results")) {
+                    if (!element.isJsonObject()) {
+                        continue;
+                    }
+                    JsonObject resultObj = element.getAsJsonObject();
+                    DocumentPushResult result = new DocumentPushResult();
+                    result.setStatus(getStringOrNull(resultObj, "status"));
+                    result.setDocumentIdentityId(getStringOrNull(resultObj, "document_identity_id"));
+                    result.setVersion(getIntOrDefault(resultObj, "version", 0));
+                    result.setMessage(getStringOrNull(resultObj, "message"));
+                    if (resultObj.has("document") && resultObj.get("document").isJsonObject()) {
+                        result.setDocument(parseDocument(resultObj.getAsJsonObject("document")));
+                    }
+                    if (result.getDocument() != null
+                            || "created".equals(result.getStatus())
+                            || "versioned".equals(result.getStatus())
+                            || "skipped".equals(result.getStatus())) {
+                        pushed++;
+                    }
+                    results.add(result);
+                }
+            }
+
+            PushResult pushResult = PushResult.success(0, 0, 0, baseVersion);
+            pushResult.setDocumentsPushed(pushed);
+            pushResult.setDocumentResults(results);
+            return pushResult;
+        }
+    }
+
+    /**
      * Push symbols to SymGraph in bulk (authenticated).
      */
     public PushResult pushSymbolsBulk(String sha256, List<Map<String, Object>> symbols) throws IOException, SymGraphAuthException {
@@ -1265,6 +1436,31 @@ public class SymGraphService {
             Thread.currentThread().interrupt();
             throw new IOException("Interrupted during backoff");
         }
+    }
+
+    private DocumentSummary parseDocumentSummary(JsonObject obj) {
+        DocumentSummary document = new DocumentSummary();
+        document.setId(getStringOrNull(obj, "id"));
+        document.setDocumentIdentityId(getStringOrNull(obj, "document_identity_id"));
+        document.setVersion(getIntOrDefault(obj, "version", 0));
+        document.setTitle(getStringOrNull(obj, "title"));
+        document.setDocType(getStringOrNull(obj, "doc_type"));
+        document.setContentSizeBytes(getIntOrDefault(obj, "content_size_bytes", 0));
+        document.setCreatedAt(getStringOrNull(obj, "created_at"));
+        return document;
+    }
+
+    private Document parseDocument(JsonObject obj) {
+        Document document = new Document();
+        document.setId(getStringOrNull(obj, "id"));
+        document.setDocumentIdentityId(getStringOrNull(obj, "document_identity_id"));
+        document.setVersion(getIntOrDefault(obj, "version", 0));
+        document.setTitle(getStringOrNull(obj, "title"));
+        document.setDocType(getStringOrNull(obj, "doc_type"));
+        document.setContentSizeBytes(getIntOrDefault(obj, "content_size_bytes", 0));
+        document.setCreatedAt(getStringOrNull(obj, "created_at"));
+        document.setContent(getStringOrNull(obj, "content"));
+        return document;
     }
 
     // JSON helper methods

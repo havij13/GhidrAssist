@@ -1105,16 +1105,23 @@ public class AnalysisDB {
         private final int id;
         private final String description;
         private final Timestamp lastUpdate;
+        private final String chatType;
 
         public ChatSession(int id, String description, Timestamp lastUpdate) {
+            this(id, description, lastUpdate, "chat");
+        }
+
+        public ChatSession(int id, String description, Timestamp lastUpdate, String chatType) {
             this.id = id;
             this.description = description;
             this.lastUpdate = lastUpdate;
+            this.chatType = chatType != null ? chatType : "chat";
         }
 
         public int getId() { return id; }
         public String getDescription() { return description; }
         public Timestamp getLastUpdate() { return lastUpdate; }
+        public String getChatType() { return chatType; }
     }
 
     /**

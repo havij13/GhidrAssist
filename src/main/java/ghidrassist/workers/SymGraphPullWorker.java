@@ -22,6 +22,7 @@ public class SymGraphPullWorker extends AnalysisWorker<SymGraphPullWorker.Result
      */
     public static class Result {
         public final List<ConflictEntry> conflicts;
+        public final List<DocumentSummary> documents;
         public final GraphExport graphExport;
         public final int graphNodes;
         public final int graphEdges;
@@ -30,10 +31,11 @@ public class SymGraphPullWorker extends AnalysisWorker<SymGraphPullWorker.Result
         public final boolean cancelled;
         public final String error;
 
-        public Result(List<ConflictEntry> conflicts, GraphExport graphExport,
+        public Result(List<ConflictEntry> conflicts, List<DocumentSummary> documents, GraphExport graphExport,
                       int graphNodes, int graphEdges, int graphCommunities,
                       long elapsedMs, boolean cancelled) {
             this.conflicts = conflicts;
+            this.documents = documents;
             this.graphExport = graphExport;
             this.graphNodes = graphNodes;
             this.graphEdges = graphEdges;
@@ -45,6 +47,7 @@ public class SymGraphPullWorker extends AnalysisWorker<SymGraphPullWorker.Result
 
         public Result(String error) {
             this.conflicts = new ArrayList<>();
+            this.documents = new ArrayList<>();
             this.graphExport = null;
             this.graphNodes = 0;
             this.graphEdges = 0;
@@ -56,6 +59,7 @@ public class SymGraphPullWorker extends AnalysisWorker<SymGraphPullWorker.Result
 
         public Result(long elapsedMs, boolean cancelled) {
             this.conflicts = new ArrayList<>();
+            this.documents = new ArrayList<>();
             this.graphExport = null;
             this.graphNodes = 0;
             this.graphEdges = 0;
@@ -134,14 +138,14 @@ public class SymGraphPullWorker extends AnalysisWorker<SymGraphPullWorker.Result
                 return new Result(elapsed, true);
             }
 
-            // Phase 2: Fetch graph data (60-80%)
+            // Phase 2: Fetch graph data (50-70%)
             GraphExport graphExport = null;
             int graphNodes = 0;
             int graphEdges = 0;
             int graphCommunities = 0;
 
             if (includeGraph) {
-                publishProgress(60, 100, "Fetching graph data...");
+                publishProgress(50, 100, "Fetching graph data...");
                 graphExport = symGraphService.exportGraph(sha256, version);
                 if (graphExport != null) {
                     graphNodes = graphExport.getNodes().size();
@@ -155,8 +159,23 @@ public class SymGraphPullWorker extends AnalysisWorker<SymGraphPullWorker.Result
                 return new Result(elapsed, true);
             }
 
-            // Phase 3: Build conflict list (80-100%)
-            publishProgress(80, 100, "Building conflict list...");
+            // Phase 3: Fetch documents (70-85%)
+            publishProgress(70, 100, "Fetching documents...");
+            List<DocumentSummary> documents = symGraphService.listDocuments(sha256, version);
+            if (!nameFilter.isEmpty()) {
+                documents.removeIf(document -> {
+                    String title = document != null ? document.getTitle() : null;
+                    return title == null || !title.toLowerCase().contains(nameFilter);
+                });
+            }
+
+            if (isCancelRequested()) {
+                long elapsed = System.currentTimeMillis() - startTime;
+                return new Result(elapsed, true);
+            }
+
+            // Phase 4: Build conflict list (85-100%)
+            publishProgress(85, 100, "Building conflict list...");
 
             Map<Long, String> localSymbols = getLocalSymbolMap();
             List<ConflictEntry> conflicts = symGraphService.buildConflictEntries(
@@ -165,7 +184,7 @@ public class SymGraphPullWorker extends AnalysisWorker<SymGraphPullWorker.Result
             publishProgress(100, 100, "Complete");
 
             long elapsed = System.currentTimeMillis() - startTime;
-            return new Result(conflicts, graphExport, graphNodes, graphEdges, graphCommunities, elapsed, false);
+            return new Result(conflicts, documents, graphExport, graphNodes, graphEdges, graphCommunities, elapsed, false);
 
         } catch (Exception e) {
             Msg.error(this, "Pull preview error: " + e.getMessage(), e);

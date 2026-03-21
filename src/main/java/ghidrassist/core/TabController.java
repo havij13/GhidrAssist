@@ -144,10 +144,10 @@ public class TabController {
         this.analysisDB = new AnalysisDB();
 
         // Initialize sub-controllers
-        this.symGraphController = new SymGraphController(plugin, analysisDB);
+        this.symGraphController = new SymGraphController(plugin, analysisDB, queryService, this::refreshChatHistory);
         this.semanticGraphController = new SemanticGraphController(plugin, analysisDB);
 
-        // Register document chat handler for the add_document_to_chat tool
+        // Register document chat handler for the ga_add_document tool
         queryService.setDocumentChatHandler((title, content) -> {
             int sessionId = queryService.createDocumentChat(title, content);
             if (sessionId != -1) {
@@ -1494,6 +1494,14 @@ public class TabController {
         if (rowIndex >= 0 && rowIndex < sessions.size()) {
             ghidrassist.AnalysisDB.ChatSession session = sessions.get(rowIndex);
             queryService.updateChatDescription(session.getId(), newDescription);
+        }
+    }
+
+    public void handleChatTypeUpdate(int rowIndex, String newType) {
+        java.util.List<ghidrassist.AnalysisDB.ChatSession> sessions = queryService.getChatSessions();
+        if (rowIndex >= 0 && rowIndex < sessions.size()) {
+            ghidrassist.AnalysisDB.ChatSession session = sessions.get(rowIndex);
+            queryService.updateChatType(session.getId(), newType);
         }
     }
     

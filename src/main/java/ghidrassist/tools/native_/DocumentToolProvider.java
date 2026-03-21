@@ -14,14 +14,14 @@ import java.util.concurrent.CompletableFuture;
 
 /**
  * Tool provider for creating document chats.
- * Provides a single tool "add_document_to_chat" that creates a new chat session
+ * Provides a single tool "ga_add_document" that creates a new chat session
  * populated with custom markdown content. Used by the ReAct agent to output
  * clean reports and as groundwork for SymGraph document sync.
  */
 public class DocumentToolProvider implements ToolProvider {
 
     private static final String PROVIDER_NAME = "Document";
-    private static final String TOOL_NAME = "add_document_to_chat";
+    private static final String TOOL_NAME = "ga_add_document";
 
     private DocumentChatHandler handler;
 
