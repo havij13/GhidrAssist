@@ -26,8 +26,8 @@ public class SchemaVersionDetector {
     /** Graph-RAG with security columns, without user_edited */
     public static final int VERSION_GRAPHRAG_SECURITY = 3;
 
-    /** Current full schema with document chat metadata */
-    public static final int VERSION_CURRENT = 8;
+    /** Current full schema with function signature/code fields */
+    public static final int VERSION_CURRENT = 9;
 
     private final Connection connection;
 
@@ -112,6 +112,10 @@ public class SchemaVersionDetector {
 
         if (!tableExists("GHDocumentChatMetadata")) {
             return 7;
+        }
+
+        if (!graphNodeColumns.contains("signature")) {
+            return 8;
         }
 
         return VERSION_CURRENT;

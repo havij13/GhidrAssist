@@ -5,6 +5,12 @@ import ghidra.program.model.address.Address;
 import ghidra.util.Msg;
 import ghidrassist.chat.PersistedChatMessage;
 import ghidrassist.db.migration.SchemaMigrationRunner;
+import ghidrassist.db.migration.V2_GraphRAGCore;
+import ghidrassist.db.migration.V3_SecurityColumns;
+import ghidrassist.db.migration.V4_UserEditedColumn;
+import ghidrassist.db.migration.V5_UniqueAddressIndex;
+import ghidrassist.db.migration.V7_LlmRenames;
+import ghidrassist.db.migration.V9_FunctionCodeFields;
 import ghidrassist.graphrag.BinaryKnowledgeGraph;
 import java.sql.*;
 import java.util.ArrayList;
@@ -56,6 +62,9 @@ public class AnalysisDB {
                 "address",
                 "binary_id",
                 "name",
+                "signature",
+                "decompiled_code",
+                "disassembly",
                 "raw_content",
                 "llm_summary",
                 "confidence",
@@ -105,9 +114,20 @@ public class AnalysisDB {
         List<String> ftsColumns = Arrays.asList(
                 "id",
                 "name",
+                "signature",
                 "llm_summary",
                 "security_flags"
         );
+
+        restoreGraphRagTablesFromBackups(nodeColumns, edgeColumns, communityColumns, memberColumns);
+
+        if (!tableExists("graph_nodes") ||
+            !tableExists("graph_edges") ||
+            !tableExists("graph_communities") ||
+            !tableExists("community_members")) {
+            Msg.warn(this, "Graph-RAG tables missing after migration; recreating canonical schema");
+            recreateGraphRagSchema();
+        }
 
         dropGraphNodeTriggers();
 
@@ -117,13 +137,20 @@ public class AnalysisDB {
             renameTableWithCounter("graph_communities");
             renameTableWithCounter("community_members");
             renameTableWithCounter("node_fts");
+            recreateGraphRagSchema();
+            ensureFtsSync();
             return;
         }
 
-        ensureTableSchema("graph_edges", edgeColumns);
-        ensureTableSchema("graph_communities", communityColumns);
-        ensureTableSchema("community_members", memberColumns);
-        ensureTableSchema("node_fts", ftsColumns);
+        boolean edgesRenamed = ensureTableSchema("graph_edges", edgeColumns);
+        boolean communitiesRenamed = ensureTableSchema("graph_communities", communityColumns);
+        boolean membersRenamed = ensureTableSchema("community_members", memberColumns);
+        boolean ftsRenamed = ensureTableSchema("node_fts", ftsColumns);
+
+        if (edgesRenamed || communitiesRenamed || membersRenamed || ftsRenamed || !tableExists("node_fts")) {
+            Msg.warn(this, "Graph-RAG auxiliary schema out of date; recreating canonical schema");
+            recreateGraphRagSchema();
+        }
 
         ensureFtsSync();
     }
@@ -234,10 +261,62 @@ public class AnalysisDB {
         if (!tableExists(tableName)) {
             return;
         }
-        String backupName = nextBackupName(tableName);
         try (Statement stmt = connection.createStatement()) {
+            if ("node_fts".equals(tableName)) {
+                stmt.execute("DROP TABLE IF EXISTS " + tableName);
+                return;
+            }
+            String backupName = nextBackupName(tableName);
             stmt.execute("ALTER TABLE " + tableName + " RENAME TO " + backupName);
         }
+    }
+
+    private void restoreGraphRagTablesFromBackups(List<String> nodeColumns, List<String> edgeColumns,
+                                                  List<String> communityColumns, List<String> memberColumns)
+            throws SQLException {
+        restoreTableFromBackupIfMissing("graph_nodes", nodeColumns);
+        restoreTableFromBackupIfMissing("graph_edges", edgeColumns);
+        restoreTableFromBackupIfMissing("graph_communities", communityColumns);
+        restoreTableFromBackupIfMissing("community_members", memberColumns);
+    }
+
+    private void restoreTableFromBackupIfMissing(String tableName, List<String> expectedColumns) throws SQLException {
+        if (tableExists(tableName)) {
+            return;
+        }
+
+        List<String> candidates = new ArrayList<>();
+        try (PreparedStatement stmt = connection.prepareStatement(
+                "SELECT name FROM sqlite_master WHERE type='table' AND (name LIKE ? OR name = ? OR name LIKE ?) ORDER BY name DESC")) {
+            stmt.setString(1, tableName + "_backup_%");
+            stmt.setString(2, tableName + "_bak");
+            stmt.setString(3, tableName + "_bak_%");
+            try (ResultSet rs = stmt.executeQuery()) {
+                while (rs.next()) {
+                    candidates.add(rs.getString("name"));
+                }
+            }
+        }
+
+        for (String candidate : candidates) {
+            if (!columnsMatch(getTableColumns(candidate), expectedColumns)) {
+                continue;
+            }
+            try (Statement stmt = connection.createStatement()) {
+                stmt.execute("ALTER TABLE " + candidate + " RENAME TO " + tableName);
+            }
+            Msg.warn(this, "Restored missing " + tableName + " from backup table " + candidate);
+            return;
+        }
+    }
+
+    private void recreateGraphRagSchema() throws SQLException {
+        new V2_GraphRAGCore().migrate(connection);
+        new V3_SecurityColumns().migrate(connection);
+        new V4_UserEditedColumn().migrate(connection);
+        new V5_UniqueAddressIndex().migrate(connection);
+        new V7_LlmRenames().migrate(connection);
+        new V9_FunctionCodeFields().migrate(connection);
     }
 
     /**
@@ -288,11 +367,29 @@ public class AnalysisDB {
             stmt.execute("CREATE VIRTUAL TABLE IF NOT EXISTS node_fts USING fts5("
                     + "id, "
                     + "name, "
+                    + "signature, "
                     + "llm_summary, "
                     + "security_flags, "
                     + "content='graph_nodes', "
                     + "content_rowid='rowid'"
                     + ")");
+
+            stmt.execute("CREATE TRIGGER IF NOT EXISTS graph_nodes_ai AFTER INSERT ON graph_nodes BEGIN "
+                    + "INSERT INTO node_fts(rowid, id, name, signature, llm_summary, security_flags) "
+                    + "VALUES (NEW.rowid, NEW.id, NEW.name, NEW.signature, NEW.llm_summary, NEW.security_flags); "
+                    + "END");
+
+            stmt.execute("CREATE TRIGGER IF NOT EXISTS graph_nodes_ad AFTER DELETE ON graph_nodes BEGIN "
+                    + "INSERT INTO node_fts(node_fts, rowid, id, name, signature, llm_summary, security_flags) "
+                    + "VALUES ('delete', OLD.rowid, OLD.id, OLD.name, OLD.signature, OLD.llm_summary, OLD.security_flags); "
+                    + "END");
+
+            stmt.execute("CREATE TRIGGER IF NOT EXISTS graph_nodes_au AFTER UPDATE ON graph_nodes BEGIN "
+                    + "INSERT INTO node_fts(node_fts, rowid, id, name, signature, llm_summary, security_flags) "
+                    + "VALUES ('delete', OLD.rowid, OLD.id, OLD.name, OLD.signature, OLD.llm_summary, OLD.security_flags); "
+                    + "INSERT INTO node_fts(rowid, id, name, signature, llm_summary, security_flags) "
+                    + "VALUES (NEW.rowid, NEW.id, NEW.name, NEW.signature, NEW.llm_summary, NEW.security_flags); "
+                    + "END");
 
             // Step 5: Rebuild FTS index from existing graph_nodes data
             Msg.info(this, "Rebuilding FTS index from existing data...");
