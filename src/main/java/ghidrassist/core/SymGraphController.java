@@ -1481,13 +1481,9 @@ public class SymGraphController {
                     KnowledgeNode targetNode = nodeCache.get(edge.getTargetId());
 
                     if (sourceNode != null && targetNode != null) {
-                        // Resolve PLT addresses for externals
-                        Long srcResolved = sourceNode.getAddress() != null ? sourceNode.getAddress() : resolveExternalAddress(sourceNode.getName());
-                        Long tgtResolved = targetNode.getAddress() != null ? targetNode.getAddress() : resolveExternalAddress(targetNode.getName());
-
                         Map<String, Object> edgeMap = new HashMap<>();
-                        edgeMap.put("source_address", srcResolved != null ? String.format("0x%x", srcResolved) : "0x0");
-                        edgeMap.put("target_address", tgtResolved != null ? String.format("0x%x", tgtResolved) : "0x0");
+                        edgeMap.put("source_address", sourceNode.getAddress() != null ? String.format("0x%x", sourceNode.getAddress()) : "0x0");
+                        edgeMap.put("target_address", targetNode.getAddress() != null ? String.format("0x%x", targetNode.getAddress()) : "0x0");
                         edgeMap.put("source_name", sourceNode.getName());
                         edgeMap.put("target_name", targetNode.getName());
                         edgeMap.put("edge_type", edge.getType().name().toLowerCase());
@@ -1518,27 +1514,12 @@ public class SymGraphController {
      */
     private Map<String, Object> nodeToExportMap(KnowledgeNode node) {
         Map<String, Object> nodeMap = new HashMap<>();
-        // Use PLT address for externals without real addresses
-        Long resolved = node.getAddress() != null ? node.getAddress() : resolveExternalAddress(node.getName());
-        nodeMap.put("address", resolved != null ? String.format("0x%x", resolved) : "0x0");
-        // Classify node type - check for external/thunk functions
-        String nodeType = node.getType().name().toLowerCase();
-        if (nodeType.equals("function")) {
-            if (node.getAddress() == null) {
-                nodeType = "external";
-            } else {
-                Program program = plugin.getCurrentProgram();
-                if (program != null) {
-                    Address addr = program.getAddressFactory().getDefaultAddressSpace().getAddress(node.getAddress());
-                    Function func = program.getFunctionManager().getFunctionAt(addr);
-                    if (func != null && (func.isExternal() || func.isThunk())) {
-                        nodeType = "external";
-                    }
-                }
-            }
-        }
-        nodeMap.put("node_type", nodeType);
+        nodeMap.put("address", node.getAddress() != null ? String.format("0x%x", node.getAddress()) : "0x0");
+        nodeMap.put("node_type", node.getType().name().toLowerCase());
         nodeMap.put("name", node.getName());
+        nodeMap.put("signature", node.getSignature());
+        nodeMap.put("decompiled_code", node.getDecompiledCode());
+        nodeMap.put("disassembly", node.getDisassembly());
         nodeMap.put("raw_content", node.getRawContent());
         nodeMap.put("llm_summary", node.getLlmSummary());
         nodeMap.put("confidence", node.getConfidence());

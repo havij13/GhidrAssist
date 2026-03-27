@@ -173,6 +173,9 @@ public class SymGraphModels {
         private long address;
         private String nodeType;
         private String name;
+        private String signature;
+        private String decompiledCode;
+        private String disassembly;
         private String summary;
         private Map<String, Object> properties;
 
@@ -186,6 +189,12 @@ public class SymGraphModels {
         public void setNodeType(String nodeType) { this.nodeType = nodeType; }
         public String getName() { return name; }
         public void setName(String name) { this.name = name; }
+        public String getSignature() { return signature; }
+        public void setSignature(String signature) { this.signature = signature; }
+        public String getDecompiledCode() { return decompiledCode; }
+        public void setDecompiledCode(String decompiledCode) { this.decompiledCode = decompiledCode; }
+        public String getDisassembly() { return disassembly; }
+        public void setDisassembly(String disassembly) { this.disassembly = disassembly; }
         public String getSummary() { return summary; }
         public void setSummary(String summary) { this.summary = summary; }
         public Map<String, Object> getProperties() { return properties; }
@@ -198,6 +207,8 @@ public class SymGraphModels {
     public static class GraphEdge {
         private long sourceAddress;
         private long targetAddress;
+        private String sourceName;
+        private String targetName;
         private String edgeType;
         private Map<String, Object> properties;
 
@@ -213,6 +224,10 @@ public class SymGraphModels {
         public void setSourceAddress(long sourceAddress) { this.sourceAddress = sourceAddress; }
         public long getTargetAddress() { return targetAddress; }
         public void setTargetAddress(long targetAddress) { this.targetAddress = targetAddress; }
+        public String getSourceName() { return sourceName; }
+        public void setSourceName(String sourceName) { this.sourceName = sourceName; }
+        public String getTargetName() { return targetName; }
+        public void setTargetName(String targetName) { this.targetName = targetName; }
         public String getEdgeType() { return edgeType; }
         public void setEdgeType(String edgeType) { this.edgeType = edgeType; }
         public Map<String, Object> getProperties() { return properties; }

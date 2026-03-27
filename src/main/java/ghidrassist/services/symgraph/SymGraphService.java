@@ -493,8 +493,20 @@ public class SymGraphService {
                     }
 
                     // Then parse top-level RE analysis fields (these override nested if present)
+                    if (nodeObj.has("signature") && !nodeObj.get("signature").isJsonNull()) {
+                        props.put("signature", nodeObj.get("signature").getAsString());
+                    }
+                    if (nodeObj.has("decompiled_code") && !nodeObj.get("decompiled_code").isJsonNull()) {
+                        props.put("decompiled_code", nodeObj.get("decompiled_code").getAsString());
+                    }
+                    if (nodeObj.has("disassembly") && !nodeObj.get("disassembly").isJsonNull()) {
+                        props.put("disassembly", nodeObj.get("disassembly").getAsString());
+                    }
                     if (nodeObj.has("raw_content") && !nodeObj.get("raw_content").isJsonNull()) {
                         props.put("raw_content", nodeObj.get("raw_content").getAsString());
+                    }
+                    if (!props.containsKey("decompiled_code") && props.containsKey("raw_content")) {
+                        props.put("decompiled_code", props.get("raw_content"));
                     }
                     if (nodeObj.has("confidence") && !nodeObj.get("confidence").isJsonNull()) {
                         props.put("confidence", nodeObj.get("confidence").getAsDouble());
@@ -555,6 +567,8 @@ public class SymGraphService {
                     GraphEdge edge = new GraphEdge();
                     edge.setSourceAddress(getLongOrDefault(edgeObj, "source_address", 0));
                     edge.setTargetAddress(getLongOrDefault(edgeObj, "target_address", 0));
+                    edge.setSourceName(getStringOrDefault(edgeObj, "source_name", null));
+                    edge.setTargetName(getStringOrDefault(edgeObj, "target_name", null));
                     edge.setEdgeType(getStringOrDefault(edgeObj, "edge_type", "calls"));
                     if (edgeObj.has("properties") && edgeObj.get("properties").isJsonObject()) {
                         Map<String, Object> props = gson.fromJson(

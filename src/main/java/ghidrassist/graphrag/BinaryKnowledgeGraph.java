@@ -382,15 +382,18 @@ public class BinaryKnowledgeGraph {
     private void upsertNodeInternal(KnowledgeNode node, boolean isRetry) {
         // Step 1: Try INSERT OR IGNORE for new nodes (preserves edge references)
         String insertSql = "INSERT OR IGNORE INTO graph_nodes "
-                + "(id, type, address, binary_id, name, raw_content, llm_summary, confidence, "
+                + "(id, type, address, binary_id, name, signature, decompiled_code, disassembly, raw_content, llm_summary, confidence, "
                 + "embedding, security_flags, network_apis, file_io_apis, ip_addresses, urls, "
                 + "file_paths, domains, registry_keys, risk_level, activity_profile, analysis_depth, "
                 + "created_at, updated_at, is_stale, user_edited) "
-                + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
+                + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
 
         // Step 2: UPDATE existing nodes (for when INSERT was ignored)
         String updateSql = "UPDATE graph_nodes SET "
                 + "name = COALESCE(?, name), "
+                + "signature = COALESCE(?, signature), "
+                + "decompiled_code = COALESCE(?, decompiled_code), "
+                + "disassembly = COALESCE(?, disassembly), "
                 + "raw_content = COALESCE(?, raw_content), "
                 + "llm_summary = COALESCE(?, llm_summary), "
                 + "confidence = ?, "
@@ -423,25 +426,28 @@ public class BinaryKnowledgeGraph {
                 }
                 insertStmt.setString(4, node.getBinaryId());
                 insertStmt.setString(5, node.getName());
-                insertStmt.setString(6, node.getRawContent());
-                insertStmt.setString(7, node.getLlmSummary());
-                insertStmt.setFloat(8, node.getConfidence());
-                insertStmt.setBytes(9, node.serializeEmbedding());
-                insertStmt.setString(10, node.serializeSecurityFlags());
-                insertStmt.setString(11, node.serializeNetworkAPIs());
-                insertStmt.setString(12, node.serializeFileIOAPIs());
-                insertStmt.setString(13, node.serializeIPAddresses());
-                insertStmt.setString(14, node.serializeURLs());
-                insertStmt.setString(15, node.serializeFilePaths());
-                insertStmt.setString(16, node.serializeDomains());
-                insertStmt.setString(17, node.serializeRegistryKeys());
-                insertStmt.setString(18, node.getRiskLevel());
-                insertStmt.setString(19, node.getActivityProfile());
-                insertStmt.setInt(20, node.getAnalysisDepth());
-                insertStmt.setLong(21, node.getCreatedAt().toEpochMilli());
-                insertStmt.setLong(22, node.getUpdatedAt().toEpochMilli());
-                insertStmt.setInt(23, node.isStale() ? 1 : 0);
-                insertStmt.setInt(24, node.isUserEdited() ? 1 : 0);
+                insertStmt.setString(6, node.getSignature());
+                insertStmt.setString(7, node.getDecompiledCode());
+                insertStmt.setString(8, node.getDisassembly());
+                insertStmt.setString(9, node.getRawContent());
+                insertStmt.setString(10, node.getLlmSummary());
+                insertStmt.setFloat(11, node.getConfidence());
+                insertStmt.setBytes(12, node.serializeEmbedding());
+                insertStmt.setString(13, node.serializeSecurityFlags());
+                insertStmt.setString(14, node.serializeNetworkAPIs());
+                insertStmt.setString(15, node.serializeFileIOAPIs());
+                insertStmt.setString(16, node.serializeIPAddresses());
+                insertStmt.setString(17, node.serializeURLs());
+                insertStmt.setString(18, node.serializeFilePaths());
+                insertStmt.setString(19, node.serializeDomains());
+                insertStmt.setString(20, node.serializeRegistryKeys());
+                insertStmt.setString(21, node.getRiskLevel());
+                insertStmt.setString(22, node.getActivityProfile());
+                insertStmt.setInt(23, node.getAnalysisDepth());
+                insertStmt.setLong(24, node.getCreatedAt().toEpochMilli());
+                insertStmt.setLong(25, node.getUpdatedAt().toEpochMilli());
+                insertStmt.setInt(26, node.isStale() ? 1 : 0);
+                insertStmt.setInt(27, node.isUserEdited() ? 1 : 0);
 
                 insertStmt.executeUpdate();
             }
@@ -450,25 +456,28 @@ public class BinaryKnowledgeGraph {
             // This ensures summaries and other updated fields get saved
             try (PreparedStatement updateStmt = connection.prepareStatement(updateSql)) {
                 updateStmt.setString(1, node.getName());
-                updateStmt.setString(2, node.getRawContent());
-                updateStmt.setString(3, node.getLlmSummary());
-                updateStmt.setFloat(4, node.getConfidence());
-                updateStmt.setBytes(5, node.serializeEmbedding());
-                updateStmt.setString(6, node.serializeSecurityFlags());
-                updateStmt.setString(7, node.serializeNetworkAPIs());
-                updateStmt.setString(8, node.serializeFileIOAPIs());
-                updateStmt.setString(9, node.serializeIPAddresses());
-                updateStmt.setString(10, node.serializeURLs());
-                updateStmt.setString(11, node.serializeFilePaths());
-                updateStmt.setString(12, node.serializeDomains());
-                updateStmt.setString(13, node.serializeRegistryKeys());
-                updateStmt.setString(14, node.getRiskLevel());
-                updateStmt.setString(15, node.getActivityProfile());
-                updateStmt.setInt(16, node.getAnalysisDepth());
-                updateStmt.setLong(17, node.getUpdatedAt().toEpochMilli());
-                updateStmt.setInt(18, node.isStale() ? 1 : 0);
-                updateStmt.setInt(19, node.isUserEdited() ? 1 : 0);
-                updateStmt.setString(20, node.getId());
+                updateStmt.setString(2, node.getSignature());
+                updateStmt.setString(3, node.getDecompiledCode());
+                updateStmt.setString(4, node.getDisassembly());
+                updateStmt.setString(5, node.getRawContent());
+                updateStmt.setString(6, node.getLlmSummary());
+                updateStmt.setFloat(7, node.getConfidence());
+                updateStmt.setBytes(8, node.serializeEmbedding());
+                updateStmt.setString(9, node.serializeSecurityFlags());
+                updateStmt.setString(10, node.serializeNetworkAPIs());
+                updateStmt.setString(11, node.serializeFileIOAPIs());
+                updateStmt.setString(12, node.serializeIPAddresses());
+                updateStmt.setString(13, node.serializeURLs());
+                updateStmt.setString(14, node.serializeFilePaths());
+                updateStmt.setString(15, node.serializeDomains());
+                updateStmt.setString(16, node.serializeRegistryKeys());
+                updateStmt.setString(17, node.getRiskLevel());
+                updateStmt.setString(18, node.getActivityProfile());
+                updateStmt.setInt(19, node.getAnalysisDepth());
+                updateStmt.setLong(20, node.getUpdatedAt().toEpochMilli());
+                updateStmt.setInt(21, node.isStale() ? 1 : 0);
+                updateStmt.setInt(22, node.isUserEdited() ? 1 : 0);
+                updateStmt.setString(23, node.getId());
 
                 updateStmt.executeUpdate();
             }
@@ -697,11 +706,11 @@ public class BinaryKnowledgeGraph {
         // This preserves node IDs that edges may reference.
         // Duplicates are already filtered by getPendingNodeByAddress() check.
         String sql = "INSERT OR IGNORE INTO graph_nodes "
-                + "(id, type, address, binary_id, name, raw_content, llm_summary, confidence, "
+                + "(id, type, address, binary_id, name, signature, decompiled_code, disassembly, raw_content, llm_summary, confidence, "
                 + "embedding, security_flags, network_apis, file_io_apis, ip_addresses, urls, "
                 + "file_paths, domains, registry_keys, risk_level, activity_profile, analysis_depth, "
                 + "created_at, updated_at, is_stale, user_edited) "
-                + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
+                + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
 
         synchronized (batchLock) {
             try {
@@ -719,25 +728,28 @@ public class BinaryKnowledgeGraph {
                         }
                         stmt.setString(4, node.getBinaryId());
                         stmt.setString(5, node.getName());
-                        stmt.setString(6, node.getRawContent());
-                        stmt.setString(7, node.getLlmSummary());
-                        stmt.setFloat(8, node.getConfidence());
-                        stmt.setBytes(9, node.serializeEmbedding());
-                        stmt.setString(10, node.serializeSecurityFlags());
-                        stmt.setString(11, node.serializeNetworkAPIs());
-                        stmt.setString(12, node.serializeFileIOAPIs());
-                        stmt.setString(13, node.serializeIPAddresses());
-                        stmt.setString(14, node.serializeURLs());
-                        stmt.setString(15, node.serializeFilePaths());
-                        stmt.setString(16, node.serializeDomains());
-                        stmt.setString(17, node.serializeRegistryKeys());
-                        stmt.setString(18, node.getRiskLevel());
-                        stmt.setString(19, node.getActivityProfile());
-                        stmt.setInt(20, node.getAnalysisDepth());
-                        stmt.setLong(21, node.getCreatedAt().toEpochMilli());
-                        stmt.setLong(22, node.getUpdatedAt().toEpochMilli());
-                        stmt.setInt(23, node.isStale() ? 1 : 0);
-                        stmt.setInt(24, node.isUserEdited() ? 1 : 0);
+                        stmt.setString(6, node.getSignature());
+                        stmt.setString(7, node.getDecompiledCode());
+                        stmt.setString(8, node.getDisassembly());
+                        stmt.setString(9, node.getRawContent());
+                        stmt.setString(10, node.getLlmSummary());
+                        stmt.setFloat(11, node.getConfidence());
+                        stmt.setBytes(12, node.serializeEmbedding());
+                        stmt.setString(13, node.serializeSecurityFlags());
+                        stmt.setString(14, node.serializeNetworkAPIs());
+                        stmt.setString(15, node.serializeFileIOAPIs());
+                        stmt.setString(16, node.serializeIPAddresses());
+                        stmt.setString(17, node.serializeURLs());
+                        stmt.setString(18, node.serializeFilePaths());
+                        stmt.setString(19, node.serializeDomains());
+                        stmt.setString(20, node.serializeRegistryKeys());
+                        stmt.setString(21, node.getRiskLevel());
+                        stmt.setString(22, node.getActivityProfile());
+                        stmt.setInt(23, node.getAnalysisDepth());
+                        stmt.setLong(24, node.getCreatedAt().toEpochMilli());
+                        stmt.setLong(25, node.getUpdatedAt().toEpochMilli());
+                        stmt.setInt(26, node.isStale() ? 1 : 0);
+                        stmt.setInt(27, node.isUserEdited() ? 1 : 0);
                         stmt.addBatch();
 
                         // Add to in-memory graph
@@ -1825,6 +1837,21 @@ public class BinaryKnowledgeGraph {
         }
 
         node.setName(rs.getString("name"));
+        try {
+            node.setSignature(rs.getString("signature"));
+        } catch (SQLException e) {
+            // Column doesn't exist in older databases
+        }
+        try {
+            node.setDecompiledCode(rs.getString("decompiled_code"));
+        } catch (SQLException e) {
+            // Column doesn't exist in older databases
+        }
+        try {
+            node.setDisassembly(rs.getString("disassembly"));
+        } catch (SQLException e) {
+            // Column doesn't exist in older databases
+        }
         node.setRawContent(rs.getString("raw_content"));
         node.setLlmSummary(rs.getString("llm_summary"));
         node.setConfidence(rs.getFloat("confidence"));

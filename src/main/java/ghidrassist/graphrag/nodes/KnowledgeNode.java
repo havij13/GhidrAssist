@@ -39,6 +39,9 @@ public class KnowledgeNode {
     // Content fields
     // ========================================
 
+    private String signature;             // Reverse-engineering byte signature
+    private String decompiledCode;        // Decompiled / high-level code
+    private String disassembly;           // Instruction listing
     private String rawContent;            // Decompiled code / assembly / description
     private String llmSummary;            // Semantic explanation from LLM
     private float confidence;             // Summary confidence 0.0 - 1.0
@@ -311,11 +314,44 @@ public class KnowledgeNode {
     }
 
     public String getRawContent() {
-        return rawContent;
+        if (rawContent != null && !rawContent.isEmpty()) {
+            return rawContent;
+        }
+        return decompiledCode != null ? decompiledCode : disassembly;
     }
 
     public void setRawContent(String rawContent) {
         this.rawContent = rawContent;
+        if ((this.decompiledCode == null || this.decompiledCode.isEmpty()) && rawContent != null) {
+            this.decompiledCode = rawContent;
+        }
+    }
+
+    public String getSignature() {
+        return signature;
+    }
+
+    public void setSignature(String signature) {
+        this.signature = signature;
+    }
+
+    public String getDecompiledCode() {
+        return decompiledCode != null ? decompiledCode : rawContent;
+    }
+
+    public void setDecompiledCode(String decompiledCode) {
+        this.decompiledCode = decompiledCode;
+        if ((this.rawContent == null || this.rawContent.isEmpty()) && decompiledCode != null) {
+            this.rawContent = decompiledCode;
+        }
+    }
+
+    public String getDisassembly() {
+        return disassembly;
+    }
+
+    public void setDisassembly(String disassembly) {
+        this.disassembly = disassembly;
     }
 
     public String getLlmSummary() {

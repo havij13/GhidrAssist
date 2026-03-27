@@ -2653,15 +2653,23 @@ public class TabController {
         }
 
         Map<Long, String> addressToId = new HashMap<>();
+        Map<String, String> endpointToId = new HashMap<>();
+        Map<String, String> nameToId = new HashMap<>();
         for (GraphNode node : export.getNodes()) {
             NodeType nodeType = NodeType.fromString(node.getNodeType());
             if (nodeType == null) {
                 nodeType = NodeType.FUNCTION;
             }
 
-            KnowledgeNode existing = graph.getNodeByAddress(node.getAddress());
+            KnowledgeNode existing = node.getAddress() == 0 && node.getName() != null
+                    ? graph.getNodeByName(node.getName())
+                    : graph.getNodeByAddress(node.getAddress());
             if ("prefer_local".equals(mergePolicy) && existing != null) {
                 addressToId.put(node.getAddress(), existing.getId());
+                endpointToId.put(graphEndpointKey(node.getAddress(), node.getName()), existing.getId());
+                if (node.getName() != null) {
+                    nameToId.put(node.getName(), existing.getId());
+                }
                 continue;
             }
 
@@ -2674,18 +2682,25 @@ public class TabController {
 
             localNode.setAddress(node.getAddress());
             localNode.setName(node.getName());
+            localNode.setSignature(node.getSignature());
 
             Map<String, Object> props = node.getProperties();
-            String rawContent = props != null ? (String) props.get("raw_content") : null;
-            if (rawContent == null && props != null) {
-                rawContent = (String) props.get("raw_code");
+            String decompiledCode = props != null ? (String) props.get("decompiled_code") : null;
+            if (decompiledCode == null && props != null) {
+                decompiledCode = (String) props.get("raw_content");
             }
+            if (decompiledCode == null && props != null) {
+                decompiledCode = (String) props.get("raw_code");
+            }
+            String disassembly = props != null ? (String) props.get("disassembly") : null;
             String summary = node.getSummary();
             if (summary == null && props != null) {
                 summary = (String) props.get("llm_summary");
             }
 
-            localNode.setRawContent(rawContent);
+            localNode.setDecompiledCode(decompiledCode);
+            localNode.setDisassembly(disassembly);
+            localNode.setRawContent(decompiledCode);
             localNode.setLlmSummary(summary);
             localNode.setConfidence((float) getDoubleProperty(props, "confidence", 0.0));
             localNode.setSecurityFlags(getListProperty(props, "security_flags"));
@@ -2715,12 +2730,29 @@ public class TabController {
 
             graph.upsertNode(localNode);
             addressToId.put(node.getAddress(), localNode.getId());
+            endpointToId.put(graphEndpointKey(node.getAddress(), node.getName()), localNode.getId());
+            if (node.getName() != null) {
+                nameToId.put(node.getName(), localNode.getId());
+            }
         }
 
         Gson gson = new Gson();
         for (GraphEdge edge : export.getEdges()) {
-            String sourceId = addressToId.get(edge.getSourceAddress());
-            String targetId = addressToId.get(edge.getTargetAddress());
+            String sourceId = endpointToId.get(graphEndpointKey(edge.getSourceAddress(), edge.getSourceName()));
+            if (sourceId == null) {
+                sourceId = addressToId.get(edge.getSourceAddress());
+            }
+            if (sourceId == null && edge.getSourceAddress() == 0 && edge.getSourceName() != null) {
+                sourceId = nameToId.get(edge.getSourceName());
+            }
+
+            String targetId = endpointToId.get(graphEndpointKey(edge.getTargetAddress(), edge.getTargetName()));
+            if (targetId == null) {
+                targetId = addressToId.get(edge.getTargetAddress());
+            }
+            if (targetId == null && edge.getTargetAddress() == 0 && edge.getTargetName() != null) {
+                targetId = nameToId.get(edge.getTargetName());
+            }
             if (sourceId == null || targetId == null) {
                 continue;
             }
@@ -2733,6 +2765,10 @@ public class TabController {
             String metadata = props != null ? gson.toJson(props) : null;
             graph.addEdge(sourceId, targetId, edgeType, weight, metadata);
         }
+    }
+
+    private String graphEndpointKey(long address, String name) {
+        return "addr:" + address + "|name:" + (name != null ? name : "");
     }
 
     private boolean applyVariableSymbol(Function func,
