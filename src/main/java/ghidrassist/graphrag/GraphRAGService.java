@@ -491,7 +491,7 @@ public class GraphRAGService {
             ghidrassist.graphrag.extraction.SecurityFeatureExtractor extractor =
                     new ghidrassist.graphrag.extraction.SecurityFeatureExtractor(program, monitor);
             // Pass decompiled code for additional API detection via regex parsing
-            String decompiledCode = node.getRawContent();
+            String decompiledCode = node.getDecompiledCode();
             ghidrassist.graphrag.extraction.SecurityFeatures features = extractor.extractFeatures(function, decompiledCode);
 
             if (!features.isEmpty()) {
@@ -566,7 +566,7 @@ public class GraphRAGService {
 
             try {
                 // Pass decompiled code for additional API detection via regex parsing
-                String decompiledCode = node.getRawContent();
+                String decompiledCode = node.getDecompiledCode();
                 ghidrassist.graphrag.extraction.SecurityFeatures features = extractor.extractFeatures(function, decompiledCode);
                 if (!features.isEmpty()) {
                     node.applySecurityFeatures(features);

@@ -48,6 +48,7 @@ public class StructureExtractor {
     private final BinaryKnowledgeGraph graph;
     private final String binaryId;
     private final TaskMonitor monitor;
+    private final FunctionSignatureGenerator signatureGenerator;
 
     // Statistics (thread-safe)
     private final AtomicInteger functionsExtracted = new AtomicInteger(0);
@@ -84,6 +85,7 @@ public class StructureExtractor {
         this.graph = graph;
         this.binaryId = graph.getBinaryId();
         this.monitor = monitor;
+        this.signatureGenerator = new FunctionSignatureGenerator(program, monitor);
     }
 
     /**
@@ -188,7 +190,10 @@ public class StructureExtractor {
 
             // Check if already cached
             KnowledgeNode existing = graph.getNodeByAddress(function.getEntryPoint().getOffset());
-            if (existing != null && existing.getRawContent() != null) {
+            if (existing != null &&
+                existing.getRawContent() != null &&
+                existing.getSignature() != null &&
+                existing.getDisassembly() != null) {
                 // Node exists - but still update edges in case new edge types were added
                 updateFunctionEdges(function, existing);
                 return existing;
@@ -456,7 +461,10 @@ public class StructureExtractor {
 
             // Check if already cached (synchronized read)
             KnowledgeNode existing = graph.getNodeByAddress(address);
-            if (existing != null && existing.getRawContent() != null) {
+            if (existing != null &&
+                existing.getRawContent() != null &&
+                existing.getSignature() != null &&
+                existing.getDisassembly() != null) {
                 // Node exists - update edges in case new edge types were added
                 updateFunctionEdges(function, existing);
                 return;
@@ -561,35 +569,27 @@ public class StructureExtractor {
                 node.setName(name); // Update name in case of rename
             }
 
-            // Decompile with retry logic (3 attempts with increasing timeout)
-            String content = null;
+            String decompiledCode = null;
             if (threadDecompiler != null) {
-                content = decompileWithRetry(function, threadDecompiler);
+                decompiledCode = decompileWithRetry(function, threadDecompiler);
             }
 
-            // Fall back to disassembly if decompilation failed
-            if (content == null || content.isEmpty()) {
-                Msg.info(this, "Falling back to disassembly for: " + function.getName());
-                try {
-                    content = getDisassembly(function);
-                } catch (Exception e) {
-                    Msg.error(this, "Disassembly also failed for " + function.getName() +
-                        ": " + e.getMessage());
-                }
+            String disassembly = null;
+            try {
+                disassembly = getDisassembly(function);
+            } catch (Exception e) {
+                Msg.error(this, "Disassembly failed for " + function.getName() +
+                    ": " + e.getMessage());
             }
 
-            // Guarantee non-null content
-            if (content == null || content.isEmpty()) {
-                content = "// Unable to decompile or disassemble: " + function.getName();
-                Msg.error(this, "All extraction methods failed for: " + function.getName() +
-                    " at " + function.getEntryPoint());
-            }
+            String content = getPrimaryContent(function, decompiledCode, disassembly);
+            String signature = signatureGenerator.generate(function);
 
             // In incremental mode, check if content actually changed before marking stale
             if (incrementalMode && isExistingNode) {
                 boolean contentChanged = shouldMarkStale(existingNode, name, content);
+                applyFunctionCodeFields(node, signature, decompiledCode, disassembly, content);
                 if (contentChanged) {
-                    node.setRawContent(content);
                     node.markStale();
                     Msg.debug(this, "Content changed for " + name + ", marking stale");
                 } else {
@@ -600,7 +600,7 @@ public class StructureExtractor {
                 }
             } else {
                 // Non-incremental mode or new node - always update content
-                node.setRawContent(content);
+                applyFunctionCodeFields(node, signature, decompiledCode, disassembly, content);
                 node.markStale();
             }
 
@@ -662,6 +662,29 @@ public class StructureExtractor {
         return s.replaceAll("\\s+", " ").trim();
     }
 
+    private String getPrimaryContent(Function function, String decompiledCode, String disassembly) {
+        if (decompiledCode != null && !decompiledCode.isEmpty()) {
+            return decompiledCode;
+        }
+        if (disassembly != null && !disassembly.isEmpty()) {
+            Msg.info(this, "Falling back to disassembly for: " + function.getName());
+            return disassembly;
+        }
+
+        String fallback = "// Unable to decompile or disassemble: " + function.getName();
+        Msg.error(this, "All extraction methods failed for: " + function.getName() +
+            " at " + function.getEntryPoint());
+        return fallback;
+    }
+
+    private void applyFunctionCodeFields(KnowledgeNode node, String signature, String decompiledCode,
+                                         String disassembly, String primaryContent) {
+        node.setSignature(signature);
+        node.setDecompiledCode(decompiledCode);
+        node.setDisassembly(disassembly);
+        node.setRawContent(primaryContent);
+    }
+
     private KnowledgeNode createFunctionNode(Function function) {
         try {
             long address = function.getEntryPoint().getOffset();
@@ -679,28 +702,27 @@ public class StructureExtractor {
                 node.setName(name); // Update name in case of rename
             }
 
-            // Decompile and store raw content
-            String content = null;
+            String decompiledCode = null;
             DecompileResults results = decompiler.decompileFunction(function, 60, monitor);
             if (results != null && results.decompileCompleted()) {
-                content = results.getDecompiledFunction().getC();
-            } else {
-                // Fall back to disassembly
-                content = getDisassembly(function);
+                decompiledCode = results.getDecompiledFunction().getC();
             }
+            String disassembly = getDisassembly(function);
+            String content = getPrimaryContent(function, decompiledCode, disassembly);
+            String signature = signatureGenerator.generate(function);
 
             // In incremental mode, check if content actually changed before marking stale
             if (incrementalMode && isExistingNode) {
                 boolean contentChanged = shouldMarkStale(existingNode, name, content);
+                applyFunctionCodeFields(node, signature, decompiledCode, disassembly, content);
                 if (contentChanged) {
-                    node.setRawContent(content);
                     node.markStale();
                 } else {
                     // Content unchanged - preserve semantic data
                     node.setStale(false);
                 }
             } else {
-                node.setRawContent(content);
+                applyFunctionCodeFields(node, signature, decompiledCode, disassembly, content);
                 node.markStale();
             }
 
@@ -726,7 +748,7 @@ public class StructureExtractor {
         try {
             SecurityFeatureExtractor secExtractor = new SecurityFeatureExtractor(program, monitor);
             // Pass decompiled code for additional API call detection via regex
-            String decompiledCode = node.getRawContent();
+            String decompiledCode = node.getDecompiledCode();
             SecurityFeatures features = secExtractor.extractFeatures(function, decompiledCode);
 
             if (!features.isEmpty()) {

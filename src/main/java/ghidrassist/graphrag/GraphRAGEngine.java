@@ -119,7 +119,9 @@ public class GraphRAGEngine {
                 callers,
                 callees,
                 community,
-                node.getRawContent(),
+                node.getSignature(),
+                node.getDecompiledCode(),
+                node.getDisassembly(),
                 indexed
         );
     }
@@ -718,10 +720,15 @@ public class GraphRAGEngine {
             sb.append("\n");
         }
 
-        // Raw code (truncated)
-        if (analysis.getRawCode() != null) {
+        if (analysis.getDecompiledCode() != null) {
             sb.append("**Decompiled Code:**\n```c\n");
-            sb.append(truncate(analysis.getRawCode(), 2000));
+            sb.append(truncate(analysis.getDecompiledCode(), 2000));
+            sb.append("\n```\n");
+        }
+
+        if (analysis.getDisassembly() != null) {
+            sb.append("**Disassembly:**\n```asm\n");
+            sb.append(truncate(analysis.getDisassembly(), 2000));
             sb.append("\n```\n");
         }
 

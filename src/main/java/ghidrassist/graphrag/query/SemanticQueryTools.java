@@ -996,7 +996,7 @@ public class SemanticQueryTools {
             Msg.info(this, "get_activity_analysis: Extracting fresh features for " + function.getName());
             SecurityFeatureExtractor extractor = new SecurityFeatureExtractor(currentProgram, TaskMonitor.DUMMY);
             // Pass decompiled code for additional API detection via regex parsing
-            String decompiledCode = node != null ? node.getRawContent() : null;
+            String decompiledCode = node != null ? node.getDecompiledCode() : null;
             features = extractor.extractFeatures(function, decompiledCode);
 
             // Cache the features if we have a node
