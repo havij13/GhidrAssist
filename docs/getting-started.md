@@ -43,9 +43,6 @@ GhidrAssist is installed as a Ghidra extension.
 1. In CodeBrowser, open **Window → GhidrAssist**
 2. The GhidrAssist panel appears with the tab interface
 
-![GhidrAssist Window](screenshots/ghidrassist-window.png)
-<!-- SCREENSHOT: Ghidra CodeBrowser with GhidrAssist window open and docked -->
-
 ## Initial Configuration
 
 You need to configure at least one LLM provider.
@@ -54,9 +51,6 @@ You need to configure at least one LLM provider.
 
 1. In the GhidrAssist panel, click the **Settings** tab
 2. The LLM Providers section appears at the top
-
-![Settings Tab](screenshots/settings-tab-overview.png)
-<!-- SCREENSHOT: Settings tab showing empty LLM providers table with Add button visible -->
 
 ## Setting Up an LLM Provider
 
@@ -100,9 +94,6 @@ ollama serve
    - **Max Tokens**: `16384`
 3. Click **Save**
 4. Click **Test**
-
-![Add Ollama Provider](screenshots/add-provider-ollama.png)
-<!-- SCREENSHOT: Add Provider dialog filled out for Ollama with localhost URL -->
 
 ### Option 2: OpenAI Platform API
 
@@ -172,9 +163,6 @@ If you have a Claude Pro/Max or ChatGPT Pro/Plus subscription, use OAuth instead
 6. After authorization, credentials are saved automatically
 7. Click **Save**
 
-![OAuth Authentication](screenshots/oauth-authenticate.png)
-<!-- SCREENSHOT: Add Provider dialog showing OAuth type selected with Authenticate button -->
-
 ### Setting the Active Provider
 
 1. Use the **Active Provider** dropdown at the bottom of the LLM Providers section
@@ -198,9 +186,6 @@ If you have a Claude Pro/Max or ChatGPT Pro/Plus subscription, use OAuth instead
 2. Click the **Explain** tab
 3. Click **Explain Function**
 4. Wait for the explanation to stream in
-
-![First Explanation](screenshots/first-explanation.png)
-<!-- SCREENSHOT: Explain tab showing a function explanation with the response text visible -->
 
 ### Step 4: Ask a Question
 

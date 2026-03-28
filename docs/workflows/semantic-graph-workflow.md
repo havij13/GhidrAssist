@@ -19,9 +19,6 @@ It can be used directly in the Semantic Graph tab or via MCP queries.
 
 Navigate to the Semantic Graph tab in GhidrAssist.
 
-![Semantic Graph Empty](../screenshots/semantic-graph-empty.png)
-<!-- SCREENSHOT: Semantic Graph tab before indexing, empty or baseline state -->
-
 ### Step 2: ReIndex the Binary
 
 Click **ReIndex Binary** to build the initial graph.
@@ -31,22 +28,13 @@ This extracts:
 - Call relationships
 - Imports/exports
 
-![ReIndex](../screenshots/semantic-graph-reindex.png)
-<!-- SCREENSHOT: ReIndex progress or completed status -->
-
 ### Step 3: Run Semantic Analysis
 
 Click **Semantic Analysis** to generate LLM summaries and security metadata.
 
-![Semantic Analysis](../screenshots/semantic-graph-semantic.png)
-<!-- SCREENSHOT: List View populated with summaries and flags -->
-
 ### Step 4: Run Security Analysis
 
 From the Manual Analysis panel, click **Security Analysis** to find source-to-sink paths.
-
-![Security Analysis](../screenshots/semantic-graph-security.png)
-<!-- SCREENSHOT: Security analysis results or highlighted functions -->
 
 ### Step 5: Run Network Flow Analysis
 
@@ -55,9 +43,6 @@ Click **Network Flow Analysis** to track data flow through network send/recv API
 ### Step 6: Run Community Detection
 
 Click **Community Detection** to group related functions using Label Propagation.
-
-![Communities](../screenshots/semantic-graph-communities.png)
-<!-- SCREENSHOT: Functions showing community labels -->
 
 ## Exploring the Graph
 
@@ -78,9 +63,6 @@ Click **Community Detection** to group related functions using Label Propagation
 ### Search
 
 Search summaries and function names:
-
-![Search Results](../screenshots/semantic-graph-search-results.png)
-<!-- SCREENSHOT: Search tab showing results with snippets -->
 
 ## Using the Graph in Queries
 

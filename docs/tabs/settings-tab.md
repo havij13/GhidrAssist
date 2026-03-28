@@ -106,9 +106,6 @@ Configure Model Context Protocol (MCP) servers that provide tools.
 
 Configure the SymGraph cloud service for symbol sharing.
 
-![SymGraph Settings](../screenshots/settings-symgraph.png)
-<!-- SCREENSHOT: SymGraph section showing API URL, API Key field, Show/Hide button, Test Connection button -->
-
 Fields:
 - **API URL**: Default `https://api.symgraph.com`
 - **API Key**: Required for push/pull operations
@@ -120,9 +117,6 @@ SymGraph accounts are required for push/pull operations. See the [SymGraph Workf
 ## System Prompt Section
 
 Customize the system prompt sent to the LLM.
-
-![System Prompt](../screenshots/settings-system-prompt.png)
-<!-- SCREENSHOT: System Prompt section showing text area and Reset/Save buttons -->
 
 - **Save**: Persist prompt
 - **Revert**: Reset to default
@@ -139,18 +133,12 @@ Configure local storage paths:
 | **RLHF DB** | Stores feedback data | `ghidrassist_rlhf.db` |
 | **RAG Index** | Lucene index directory | `ghidrassist_lucene` |
 
-![Database Paths](../screenshots/settings-database-paths.png)
-<!-- SCREENSHOT: Database Paths section showing Analysis DB, RLHF DB, RAG Index fields with Browse buttons -->
-
 ## Analysis Options Section
 
 Additional analysis controls:
 
 - **Max Tool Calls/Iteration**: Limits tool calls in ReAct loops
 - **API Timeout (seconds)**: Request timeout for LLM APIs
-
-![Analysis Options](../screenshots/settings-analysis-options.png)
-<!-- SCREENSHOT: Analysis Options section showing max tool calls spinner and API timeout field -->
 
 ## Related Documentation
 

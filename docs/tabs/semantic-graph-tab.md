@@ -24,9 +24,6 @@ Displays indexed functions in a table:
 - Click a row to navigate to that function
 - Caller/callee information is shown for the selected node
 
-![List View](../screenshots/semantic-graph-list-view.png)
-<!-- SCREENSHOT: List View showing functions, summaries, and security flags -->
-
 ### Visual Graph
 
 Interactive graph visualization:
@@ -35,18 +32,12 @@ Interactive graph visualization:
 - Edges are call relationships
 - N-hop depth controls exploration
 
-![Visual Graph](../screenshots/semantic-graph-visual.png)
-<!-- SCREENSHOT: Visual Graph view with nodes and edges, one node selected -->
-
 ### Search
 
 Full-text search across summaries and annotations:
 
 - Search by keywords or function names
 - Results include relevant excerpt snippets
-
-![Search](../screenshots/semantic-graph-search.png)
-<!-- SCREENSHOT: Search tab showing results list with highlighted snippets -->
 
 ### Manual Analysis
 
