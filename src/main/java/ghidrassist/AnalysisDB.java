@@ -11,6 +11,7 @@ import ghidrassist.db.migration.V4_UserEditedColumn;
 import ghidrassist.db.migration.V5_UniqueAddressIndex;
 import ghidrassist.db.migration.V7_LlmRenames;
 import ghidrassist.db.migration.V9_FunctionCodeFields;
+import ghidrassist.db.migration.V10_GraphNodeCategory;
 import ghidrassist.graphrag.BinaryKnowledgeGraph;
 import java.sql.*;
 import java.util.ArrayList;
@@ -77,6 +78,7 @@ public class AnalysisDB {
                 "file_paths",
                 "domains",
                 "registry_keys",
+                "category",
                 "risk_level",
                 "activity_profile",
                 "analysis_depth",
@@ -317,6 +319,7 @@ public class AnalysisDB {
         new V5_UniqueAddressIndex().migrate(connection);
         new V7_LlmRenames().migrate(connection);
         new V9_FunctionCodeFields().migrate(connection);
+        new V10_GraphNodeCategory().migrate(connection);
     }
 
     /**

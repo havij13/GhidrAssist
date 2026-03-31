@@ -643,6 +643,7 @@ public class SymGraphApplyWorker extends AnalysisWorker<SymGraphApplyWorker.Resu
             localNode.setRegistryKeys(getListProperty(props, "registry_keys"));
             if (props != null) {
                 localNode.setRiskLevel((String) props.get("risk_level"));
+                localNode.setCategory((String) props.get("category"));
                 localNode.setActivityProfile((String) props.get("activity_profile"));
                 Object depth = props.get("analysis_depth");
                 if (depth instanceof Number) {

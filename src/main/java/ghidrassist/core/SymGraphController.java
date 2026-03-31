@@ -1554,6 +1554,9 @@ public class SymGraphController {
         if (node.getRiskLevel() != null) {
             nodeMap.put("risk_level", node.getRiskLevel());
         }
+        if (node.getCategory() != null) {
+            nodeMap.put("category", node.getCategory());
+        }
         if (node.getActivityProfile() != null) {
             nodeMap.put("activity_profile", node.getActivityProfile());
         }

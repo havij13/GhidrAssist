@@ -41,6 +41,7 @@ public class SchemaMigrationRunner {
         migrations.add(new V7_LlmRenames());
         migrations.add(new V8_DocumentChatMetadata());
         migrations.add(new V9_FunctionCodeFields());
+        migrations.add(new V10_GraphNodeCategory());
 
         // Sort by version number to ensure correct order
         migrations.sort(Comparator.comparingInt(SchemaMigration::getVersion));

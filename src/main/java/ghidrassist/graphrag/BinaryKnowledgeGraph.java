@@ -384,9 +384,9 @@ public class BinaryKnowledgeGraph {
         String insertSql = "INSERT OR IGNORE INTO graph_nodes "
                 + "(id, type, address, binary_id, name, signature, decompiled_code, disassembly, raw_content, llm_summary, confidence, "
                 + "embedding, security_flags, network_apis, file_io_apis, ip_addresses, urls, "
-                + "file_paths, domains, registry_keys, risk_level, activity_profile, analysis_depth, "
+                + "file_paths, domains, registry_keys, category, risk_level, activity_profile, analysis_depth, "
                 + "created_at, updated_at, is_stale, user_edited) "
-                + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
+                + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
 
         // Step 2: UPDATE existing nodes (for when INSERT was ignored)
         String updateSql = "UPDATE graph_nodes SET "
@@ -406,6 +406,7 @@ public class BinaryKnowledgeGraph {
                 + "file_paths = COALESCE(?, file_paths), "
                 + "domains = COALESCE(?, domains), "
                 + "registry_keys = COALESCE(?, registry_keys), "
+                + "category = COALESCE(?, category), "
                 + "risk_level = COALESCE(?, risk_level), "
                 + "activity_profile = COALESCE(?, activity_profile), "
                 + "analysis_depth = ?, "
@@ -441,13 +442,14 @@ public class BinaryKnowledgeGraph {
                 insertStmt.setString(18, node.serializeFilePaths());
                 insertStmt.setString(19, node.serializeDomains());
                 insertStmt.setString(20, node.serializeRegistryKeys());
-                insertStmt.setString(21, node.getRiskLevel());
-                insertStmt.setString(22, node.getActivityProfile());
-                insertStmt.setInt(23, node.getAnalysisDepth());
-                insertStmt.setLong(24, node.getCreatedAt().toEpochMilli());
-                insertStmt.setLong(25, node.getUpdatedAt().toEpochMilli());
-                insertStmt.setInt(26, node.isStale() ? 1 : 0);
-                insertStmt.setInt(27, node.isUserEdited() ? 1 : 0);
+                insertStmt.setString(21, node.getCategory());
+                insertStmt.setString(22, node.getRiskLevel());
+                insertStmt.setString(23, node.getActivityProfile());
+                insertStmt.setInt(24, node.getAnalysisDepth());
+                insertStmt.setLong(25, node.getCreatedAt().toEpochMilli());
+                insertStmt.setLong(26, node.getUpdatedAt().toEpochMilli());
+                insertStmt.setInt(27, node.isStale() ? 1 : 0);
+                insertStmt.setInt(28, node.isUserEdited() ? 1 : 0);
 
                 insertStmt.executeUpdate();
             }
@@ -471,13 +473,14 @@ public class BinaryKnowledgeGraph {
                 updateStmt.setString(14, node.serializeFilePaths());
                 updateStmt.setString(15, node.serializeDomains());
                 updateStmt.setString(16, node.serializeRegistryKeys());
-                updateStmt.setString(17, node.getRiskLevel());
-                updateStmt.setString(18, node.getActivityProfile());
-                updateStmt.setInt(19, node.getAnalysisDepth());
-                updateStmt.setLong(20, node.getUpdatedAt().toEpochMilli());
-                updateStmt.setInt(21, node.isStale() ? 1 : 0);
-                updateStmt.setInt(22, node.isUserEdited() ? 1 : 0);
-                updateStmt.setString(23, node.getId());
+                updateStmt.setString(17, node.getCategory());
+                updateStmt.setString(18, node.getRiskLevel());
+                updateStmt.setString(19, node.getActivityProfile());
+                updateStmt.setInt(20, node.getAnalysisDepth());
+                updateStmt.setLong(21, node.getUpdatedAt().toEpochMilli());
+                updateStmt.setInt(22, node.isStale() ? 1 : 0);
+                updateStmt.setInt(23, node.isUserEdited() ? 1 : 0);
+                updateStmt.setString(24, node.getId());
 
                 updateStmt.executeUpdate();
             }
@@ -708,9 +711,9 @@ public class BinaryKnowledgeGraph {
         String sql = "INSERT OR IGNORE INTO graph_nodes "
                 + "(id, type, address, binary_id, name, signature, decompiled_code, disassembly, raw_content, llm_summary, confidence, "
                 + "embedding, security_flags, network_apis, file_io_apis, ip_addresses, urls, "
-                + "file_paths, domains, registry_keys, risk_level, activity_profile, analysis_depth, "
+                + "file_paths, domains, registry_keys, category, risk_level, activity_profile, analysis_depth, "
                 + "created_at, updated_at, is_stale, user_edited) "
-                + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
+                + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
 
         synchronized (batchLock) {
             try {
@@ -743,13 +746,14 @@ public class BinaryKnowledgeGraph {
                         stmt.setString(18, node.serializeFilePaths());
                         stmt.setString(19, node.serializeDomains());
                         stmt.setString(20, node.serializeRegistryKeys());
-                        stmt.setString(21, node.getRiskLevel());
-                        stmt.setString(22, node.getActivityProfile());
-                        stmt.setInt(23, node.getAnalysisDepth());
-                        stmt.setLong(24, node.getCreatedAt().toEpochMilli());
-                        stmt.setLong(25, node.getUpdatedAt().toEpochMilli());
-                        stmt.setInt(26, node.isStale() ? 1 : 0);
-                        stmt.setInt(27, node.isUserEdited() ? 1 : 0);
+                        stmt.setString(21, node.getCategory());
+                        stmt.setString(22, node.getRiskLevel());
+                        stmt.setString(23, node.getActivityProfile());
+                        stmt.setInt(24, node.getAnalysisDepth());
+                        stmt.setLong(25, node.getCreatedAt().toEpochMilli());
+                        stmt.setLong(26, node.getUpdatedAt().toEpochMilli());
+                        stmt.setInt(27, node.isStale() ? 1 : 0);
+                        stmt.setInt(28, node.isUserEdited() ? 1 : 0);
                         stmt.addBatch();
 
                         // Add to in-memory graph
@@ -1912,6 +1916,11 @@ public class BinaryKnowledgeGraph {
         }
         try {
             node.setRegistryKeys(KnowledgeNode.deserializeStringList(rs.getString("registry_keys")));
+        } catch (SQLException e) {
+            // Column doesn't exist
+        }
+        try {
+            node.setCategory(rs.getString("category"));
         } catch (SQLException e) {
             // Column doesn't exist
         }

@@ -69,6 +69,7 @@ public class KnowledgeNode {
     private List<String> filePaths;       // Detected file paths in strings
     private List<String> domains;         // Detected domain names in strings
     private List<String> registryKeys;    // Detected registry keys in strings
+    private String category;              // Semantic category (error_handling, initialization, etc.)
     private String activityProfile;       // Computed activity profile (NETWORK_CLIENT, FILE_WRITER, etc.)
     private String riskLevel;             // Computed risk level (LOW, MEDIUM, HIGH)
 
@@ -385,6 +386,7 @@ public class KnowledgeNode {
 
     public void setSecurityFlags(List<String> securityFlags) {
         this.securityFlags = securityFlags != null ? new ArrayList<>(securityFlags) : new ArrayList<>();
+        normalizeLegacySecurityFlags();
     }
 
     public int getAnalysisDepth() {
@@ -487,6 +489,18 @@ public class KnowledgeNode {
         this.registryKeys = registryKeys != null ? new ArrayList<>(registryKeys) : new ArrayList<>();
     }
 
+    public String getCategory() {
+        return category;
+    }
+
+    public void setCategory(String category) {
+        if (category == null || category.trim().isEmpty()) {
+            this.category = null;
+            return;
+        }
+        this.category = category.trim().toLowerCase().replace(" ", "_");
+    }
+
     public String getActivityProfile() {
         return activityProfile;
     }
@@ -547,6 +561,32 @@ public class KnowledgeNode {
 
     public String serializeNetworkAPIs() {
         return serializeStringList(networkAPIs);
+    }
+
+    private void normalizeLegacySecurityFlags() {
+        if (securityFlags == null) {
+            securityFlags = new ArrayList<>();
+            return;
+        }
+
+        List<String> filtered = new ArrayList<>();
+        for (String flag : securityFlags) {
+            if (flag == null) {
+                continue;
+            }
+            String trimmed = flag.trim();
+            if (trimmed.isEmpty() || "LLM_FLAGGED".equals(trimmed)) {
+                continue;
+            }
+            if (trimmed.startsWith("CATEGORY_")) {
+                if (category == null || category.isEmpty()) {
+                    setCategory(trimmed.substring("CATEGORY_".length()));
+                }
+                continue;
+            }
+            filtered.add(trimmed);
+        }
+        securityFlags = filtered;
     }
 
     public String serializeFileIOAPIs() {

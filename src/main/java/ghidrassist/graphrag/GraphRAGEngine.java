@@ -102,8 +102,10 @@ public class GraphRAGEngine {
         // Get community if available
         String community = getCommunityNameForNode(node.getId());
 
-        // Extract category from summary if present
-        String category = extractCategory(node.getLlmSummary());
+        String category = node.getCategory();
+        if (category == null || category.isEmpty()) {
+            category = extractCategory(node.getLlmSummary());
+        }
 
         // indexed=true means we have SOME useful data (structure or semantic)
         // The SemanticAnalysis.hasSemanticAnalysis() method checks for LLM summary specifically

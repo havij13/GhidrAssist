@@ -38,6 +38,7 @@ public class ExplainTab extends JPanel {
     // Security info panel components
     private JPanel securityInfoPanel;
     private JLabel riskLevelLabel;
+    private JLabel categoryLabel;
     private JLabel activityProfileLabel;
     private JLabel securityFlagsLabel;
     private JTextArea networkAPIsTextArea;
@@ -122,12 +123,14 @@ public class ExplainTab extends JPanel {
                 BorderFactory.createEtchedBorder(), "Security Analysis",
                 TitledBorder.LEFT, TitledBorder.TOP));
 
-        // Risk level and activity profile row
+        // Risk level, category, and activity profile row
         JPanel topRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 10, 2));
         riskLevelLabel = new JLabel("Risk: —");
         riskLevelLabel.setFont(riskLevelLabel.getFont().deriveFont(Font.BOLD));
+        categoryLabel = new JLabel("Category: —");
         activityProfileLabel = new JLabel("Activity: —");
         topRow.add(riskLevelLabel);
+        topRow.add(categoryLabel);
         topRow.add(activityProfileLabel);
         securityInfoPanel.add(topRow);
 
@@ -614,12 +617,13 @@ public class ExplainTab extends JPanel {
      * Update the security info panel with analysis results.
      *
      * @param riskLevel Risk level (LOW, MEDIUM, HIGH) or null
+     * @param category Category string or null
      * @param activityProfile Activity profile string or null
      * @param securityFlags List of security flags or null
      * @param networkAPIs List of network API calls or null
      * @param fileIOAPIs List of file I/O API calls or null
      */
-    public void updateSecurityInfo(String riskLevel, String activityProfile,
+    public void updateSecurityInfo(String riskLevel, String category, String activityProfile,
                                    List<String> securityFlags,
                                    List<String> networkAPIs, List<String> fileIOAPIs) {
         // Update risk level with color coding
@@ -641,6 +645,12 @@ public class ExplainTab extends JPanel {
         } else {
             riskLevelLabel.setText("Risk: —");
             riskLevelLabel.setForeground(UIManager.getColor("Label.foreground"));
+        }
+
+        if (category != null && !category.isEmpty()) {
+            categoryLabel.setText("Category: " + category);
+        } else {
+            categoryLabel.setText("Category: —");
         }
 
         // Update activity profile
@@ -673,6 +683,7 @@ public class ExplainTab extends JPanel {
 
         // Show the panel if we have any data
         boolean hasData = (riskLevel != null && !riskLevel.isEmpty()) ||
+                         (category != null && !category.isEmpty()) ||
                          (activityProfile != null && !activityProfile.isEmpty()) ||
                          (securityFlags != null && !securityFlags.isEmpty()) ||
                          (networkAPIs != null && !networkAPIs.isEmpty()) ||
@@ -696,6 +707,7 @@ public class ExplainTab extends JPanel {
     public void clearSecurityInfo() {
         riskLevelLabel.setText("Risk: —");
         riskLevelLabel.setForeground(UIManager.getColor("Label.foreground"));
+        categoryLabel.setText("Category: —");
         activityProfileLabel.setText("Activity: —");
         securityFlagsLabel.setText("<html>Flags: None</html>");
         networkAPIsTextArea.setText("");

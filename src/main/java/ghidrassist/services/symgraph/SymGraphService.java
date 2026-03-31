@@ -546,6 +546,9 @@ public class SymGraphService {
                     if (nodeObj.has("risk_level") && !nodeObj.get("risk_level").isJsonNull()) {
                         props.put("risk_level", nodeObj.get("risk_level").getAsString());
                     }
+                    if (nodeObj.has("category") && !nodeObj.get("category").isJsonNull()) {
+                        props.put("category", nodeObj.get("category").getAsString());
+                    }
                     if (nodeObj.has("activity_profile") && !nodeObj.get("activity_profile").isJsonNull()) {
                         props.put("activity_profile", nodeObj.get("activity_profile").getAsString());
                     }

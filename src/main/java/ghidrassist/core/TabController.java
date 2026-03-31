@@ -439,6 +439,7 @@ public class TabController {
                                     explainTab.setMarkdownSource(fullSummary);
                                     explainTab.updateSecurityInfo(
                                         updatedNode.getRiskLevel(),
+                                        updatedNode.getCategory(),
                                         updatedNode.getActivityProfile(),
                                         updatedNode.getSecurityFlags(),
                                         updatedNode.getNetworkAPIs(),
@@ -524,6 +525,7 @@ public class TabController {
         // Update security info panel
         explainTab.updateSecurityInfo(
             node.getRiskLevel(),
+            node.getCategory(),
             node.getActivityProfile(),
             node.getSecurityFlags(),
             node.getNetworkAPIs(),
@@ -2713,6 +2715,7 @@ public class TabController {
             localNode.setRegistryKeys(getListProperty(props, "registry_keys"));
             if (props != null) {
                 localNode.setRiskLevel((String) props.get("risk_level"));
+                localNode.setCategory((String) props.get("category"));
                 localNode.setActivityProfile((String) props.get("activity_profile"));
                 Object depth = props.get("analysis_depth");
                 if (depth instanceof Number) {

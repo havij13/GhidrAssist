@@ -26,8 +26,8 @@ public class SchemaVersionDetector {
     /** Graph-RAG with security columns, without user_edited */
     public static final int VERSION_GRAPHRAG_SECURITY = 3;
 
-    /** Current full schema with function signature/code fields */
-    public static final int VERSION_CURRENT = 9;
+    /** Current full schema with graph-node category field */
+    public static final int VERSION_CURRENT = 10;
 
     private final Connection connection;
 
@@ -116,6 +116,10 @@ public class SchemaVersionDetector {
 
         if (!graphNodeColumns.contains("signature")) {
             return 8;
+        }
+
+        if (!graphNodeColumns.contains("category")) {
+            return 9;
         }
 
         return VERSION_CURRENT;
