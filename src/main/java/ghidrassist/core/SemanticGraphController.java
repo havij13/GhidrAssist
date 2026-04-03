@@ -680,14 +680,9 @@ public class SemanticGraphController {
                 List<BinaryKnowledgeGraph.GraphEdge> outgoing = graph.getOutgoingEdges(node.getId());
                 List<BinaryKnowledgeGraph.GraphEdge> incoming = graph.getIncomingEdges(node.getId());
 
-                // Combine all edges
-                List<BinaryKnowledgeGraph.GraphEdge> allEdges = new ArrayList<>();
-                allEdges.addAll(outgoing);
-                allEdges.addAll(incoming);
-
                 listView.setCallers(callers);
                 listView.setCallees(callees);
-                listView.setEdges(allEdges);
+                listView.setEdges(buildEdgeEntries(graph, node.getId(), outgoing, incoming));
                 listView.setSecurityFlags(node.getSecurityFlags());
                 listView.setSummary(node.getLlmSummary());
 
@@ -707,6 +702,53 @@ public class SemanticGraphController {
                 listView.showNotIndexed();
             }
         });
+    }
+
+    private List<ListViewPanel.EdgeEntry> buildEdgeEntries(
+            BinaryKnowledgeGraph graph,
+            String centerNodeId,
+            List<BinaryKnowledgeGraph.GraphEdge> outgoing,
+            List<BinaryKnowledgeGraph.GraphEdge> incoming
+    ) {
+        List<ListViewPanel.EdgeEntry> entries = new ArrayList<>();
+        for (BinaryKnowledgeGraph.GraphEdge edge : outgoing) {
+            entries.add(buildEdgeEntry(graph, centerNodeId, edge));
+        }
+        for (BinaryKnowledgeGraph.GraphEdge edge : incoming) {
+            entries.add(buildEdgeEntry(graph, centerNodeId, edge));
+        }
+        return entries;
+    }
+
+    private ListViewPanel.EdgeEntry buildEdgeEntry(
+            BinaryKnowledgeGraph graph,
+            String centerNodeId,
+            BinaryKnowledgeGraph.GraphEdge edge
+    ) {
+        String targetId = edge.getSourceId().equals(centerNodeId) ? edge.getTargetId() : edge.getSourceId();
+        KnowledgeNode targetNode = graph.getNode(targetId);
+        return new ListViewPanel.EdgeEntry(
+                edge.getType().name(),
+                edge.getType().getDisplayName(),
+                targetId,
+                formatNodeDisplayName(targetNode, targetId),
+                edge.getWeight()
+        );
+    }
+
+    private String formatNodeDisplayName(KnowledgeNode node, String nodeId) {
+        if (node != null) {
+            if (node.getName() != null && !node.getName().isBlank()) {
+                return node.getName();
+            }
+            if (node.getAddress() != null) {
+                return String.format("0x%x", node.getAddress());
+            }
+        }
+        if (nodeId == null) {
+            return "";
+        }
+        return nodeId.length() > 8 ? nodeId.substring(0, 8) + "..." : nodeId;
     }
 
     /**
