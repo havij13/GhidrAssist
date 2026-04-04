@@ -32,14 +32,15 @@ public class OllamaProvider extends APIProvider implements FunctionCallingProvid
     private static final String OLLAMA_MODELS_ENDPOINT = "api/tags";
     private volatile boolean isCancelled = false;
 
-    public OllamaProvider(String name, String model, Integer maxTokens, String url, String key, boolean disableTlsVerification, Integer timeout) {
-        super(name, ProviderType.OLLAMA, model, maxTokens, url, key, disableTlsVerification, timeout);
+    public OllamaProvider(String name, String model, Integer maxTokens, String url, String key,
+                          boolean disableTlsVerification, boolean bypassProxy, Integer timeout) {
+        super(name, ProviderType.OLLAMA, model, maxTokens, url, key, disableTlsVerification, bypassProxy, timeout);
     }
 
     @Override
     protected OkHttpClient buildClient() {
         try {
-            OkHttpClient.Builder builder = new OkHttpClient.Builder()
+            OkHttpClient.Builder builder = configureClientBuilder(new OkHttpClient.Builder())
                 .connectTimeout(super.timeout)
                 .readTimeout(super.timeout)
                 .writeTimeout(super.timeout)

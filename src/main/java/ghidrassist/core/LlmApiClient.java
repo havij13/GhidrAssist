@@ -40,12 +40,6 @@ public class LlmApiClient {
         this.analysisDB = new AnalysisDB();
         this.plugin = plugin;
 
-        // Get the global API timeout and set it if the provider doesn't have one
-        if (provider != null && provider.getTimeout() == null) {
-            Integer timeout = GhidrAssistPlugin.getGlobalApiTimeout();
-            provider.setTimeout(timeout);
-        }
-
         // Initialize GraphRAGService with LLM provider for background semantic analysis
         initializeGraphRAGService();
     }

@@ -27,14 +27,15 @@ public class LMStudioProvider extends APIProvider implements FunctionCallingProv
     private static final String LMSTUDIO_EMBEDDINGS_ENDPOINT = "v1/embeddings";
     private volatile boolean isCancelled = false;
 
-    public LMStudioProvider(String name, String model, Integer maxTokens, String url, String key, boolean disableTlsVerification, Integer timeout) {
-        super(name, ProviderType.LMSTUDIO, model, maxTokens, url, key, disableTlsVerification, timeout);
+    public LMStudioProvider(String name, String model, Integer maxTokens, String url, String key,
+                            boolean disableTlsVerification, boolean bypassProxy, Integer timeout) {
+        super(name, ProviderType.LMSTUDIO, model, maxTokens, url, key, disableTlsVerification, bypassProxy, timeout);
     }
 
     @Override
     protected OkHttpClient buildClient() {
         try {
-            OkHttpClient.Builder builder = new OkHttpClient.Builder()
+            OkHttpClient.Builder builder = configureClientBuilder(new OkHttpClient.Builder())
                 .connectTimeout(super.timeout)
                 .readTimeout(super.timeout)
                 .writeTimeout(super.timeout)

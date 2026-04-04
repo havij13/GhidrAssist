@@ -38,6 +38,7 @@ public class SemanticExtractor {
     private final ResponseProcessor responseProcessor = new ResponseProcessor();
     @SuppressWarnings("unused")  // Reserved for future multi-binary support
     private final String binaryId;
+    private final String systemPrompt;
 
     // Parallel processing workers
     private static final int PARALLEL_WORKERS = 3;
@@ -67,9 +68,16 @@ public class SemanticExtractor {
      * @param graph    Knowledge graph to update
      */
     public SemanticExtractor(APIProvider provider, BinaryKnowledgeGraph graph) {
+        this(provider, graph, "You are a binary analysis assistant. Provide concise, technical summaries focused on functionality and security.");
+    }
+
+    public SemanticExtractor(APIProvider provider, BinaryKnowledgeGraph graph, String systemPrompt) {
         this.provider = provider;
         this.graph = graph;
         this.binaryId = graph.getBinaryId();
+        this.systemPrompt = (systemPrompt != null && !systemPrompt.isBlank())
+            ? systemPrompt
+            : "You are a binary analysis assistant. Provide concise, technical summaries focused on functionality and security.";
         this.batchSize = DEFAULT_BATCH_SIZE;
         this.delayBetweenBatches = DEFAULT_DELAY_MS;
     }
@@ -581,8 +589,7 @@ public class SemanticExtractor {
 
         try {
             List<ChatMessage> messages = new ArrayList<>();
-            messages.add(new ChatMessage("system",
-                    "You are a binary analysis assistant. Provide concise, technical summaries focused on functionality and security."));
+            messages.add(new ChatMessage("system", systemPrompt));
             messages.add(new ChatMessage("user", prompt));
 
             String response = provider.createChatCompletion(messages);
@@ -846,8 +853,7 @@ public class SemanticExtractor {
 
         try {
             List<ChatMessage> messages = new ArrayList<>();
-            messages.add(new ChatMessage("system",
-                    "You are a binary analysis assistant. Provide concise, technical summaries focused on functionality and security."));
+            messages.add(new ChatMessage("system", systemPrompt));
             messages.add(new ChatMessage("user", prompt));
 
             // Use streaming API with think-tag filtering

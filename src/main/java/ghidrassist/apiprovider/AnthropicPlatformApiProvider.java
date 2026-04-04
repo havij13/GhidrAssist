@@ -31,14 +31,15 @@ public class AnthropicPlatformApiProvider extends APIProvider implements Functio
 
     private volatile boolean isCancelled = false;
 
-    public AnthropicPlatformApiProvider(String name, String model, Integer maxTokens, String url, String key, boolean disableTlsVerification, Integer timeout) {
-        super(name, ProviderType.ANTHROPIC_PLATFORM_API, model, maxTokens, url, key, disableTlsVerification, timeout);
+    public AnthropicPlatformApiProvider(String name, String model, Integer maxTokens, String url, String key,
+                                        boolean disableTlsVerification, boolean bypassProxy, Integer timeout) {
+        super(name, ProviderType.ANTHROPIC_PLATFORM_API, model, maxTokens, url, key, disableTlsVerification, bypassProxy, timeout);
     }
 
     @Override
     protected OkHttpClient buildClient() {
         try {
-            OkHttpClient.Builder builder = new OkHttpClient.Builder()
+            OkHttpClient.Builder builder = configureClientBuilder(new OkHttpClient.Builder())
                 .connectTimeout(super.timeout)
                 .readTimeout(super.timeout)
                 .writeTimeout(super.timeout)
@@ -797,22 +798,106 @@ public class AnthropicPlatformApiProvider extends APIProvider implements Functio
 
     @Override
     public List<String> getAvailableModels() throws APIProviderException {
-        Request request = new Request.Builder()
-            .url(url + ANTHROPIC_MODELS_ENDPOINT)
-            .build();
+        APIProviderException lastError = null;
 
-        try (Response response = executeWithRetry(request, "getAvailableModels")) {
-            JsonObject responseObj = gson.fromJson(response.body().string(), JsonObject.class);
-            List<String> modelIds = new ArrayList<>();
-            JsonArray models = responseObj.getAsJsonArray("models");
-            
-            for (JsonElement model : models) {
-                modelIds.add(model.getAsJsonObject().get("id").getAsString());
+        for (String endpoint : getModelsEndpointCandidates()) {
+            Request request = new Request.Builder()
+                .url(endpoint)
+                .header("Accept", "application/json")
+                .get()
+                .build();
+
+            try (Response response = client.newCall(request).execute()) {
+                if (response.code() == 401 || response.code() == 403) {
+                    throw handleHttpError(response, "getAvailableModels");
+                }
+
+                if (!response.isSuccessful()) {
+                    lastError = handleHttpError(response, "getAvailableModels");
+                    continue;
+                }
+
+                String responseBody = response.body() != null ? response.body().string() : "";
+                List<String> modelIds = extractAnthropicModelIds(responseBody);
+                if (!modelIds.isEmpty()) {
+                    return modelIds;
+                }
+
+                lastError = new APIProviderException(
+                    APIProviderException.ErrorCategory.SERVICE_ERROR,
+                    name,
+                    "getAvailableModels",
+                    "No available models were found."
+                );
+            } catch (IOException e) {
+                lastError = handleNetworkError(e, "getAvailableModels");
+            } catch (APIProviderException e) {
+                lastError = e;
             }
-            
+        }
+
+        if (lastError != null) {
+            throw lastError;
+        }
+
+        throw new APIProviderException(
+            APIProviderException.ErrorCategory.SERVICE_ERROR,
+            name,
+            "getAvailableModels",
+            "No available models were found."
+        );
+    }
+
+    private List<String> getModelsEndpointCandidates() {
+        List<String> candidates = new ArrayList<>();
+        String baseUrl = (url != null ? url.trim() : "").replaceAll("/+$", "");
+
+        if (baseUrl.isEmpty()) {
+            candidates.add("https://api.anthropic.com/v1/models");
+            return candidates;
+        }
+
+        if (baseUrl.endsWith("/v1/models")) {
+            candidates.add(baseUrl);
+            return candidates;
+        }
+
+        if (baseUrl.endsWith("/v1")) {
+            candidates.add(baseUrl + "/models");
+            return candidates;
+        }
+
+        candidates.add(baseUrl + "/v1/models");
+        candidates.add(baseUrl + "/models");
+        return candidates;
+    }
+
+    private List<String> extractAnthropicModelIds(String responseBody) throws APIProviderException {
+        try {
+            JsonObject responseObj = gson.fromJson(responseBody, JsonObject.class);
+            JsonArray models = null;
+            if (responseObj.has("data") && responseObj.get("data").isJsonArray()) {
+                models = responseObj.getAsJsonArray("data");
+            } else if (responseObj.has("models") && responseObj.get("models").isJsonArray()) {
+                models = responseObj.getAsJsonArray("models");
+            }
+
+            List<String> modelIds = new ArrayList<>();
+            if (models != null) {
+                for (JsonElement model : models) {
+                    if (model.isJsonObject() && model.getAsJsonObject().has("id")) {
+                        modelIds.add(model.getAsJsonObject().get("id").getAsString());
+                    }
+                }
+            }
             return modelIds;
-        } catch (IOException e) {
-            throw handleNetworkError(e, "getAvailableModels");
+        } catch (Exception e) {
+            throw new APIProviderException(
+                APIProviderException.ErrorCategory.SERVICE_ERROR,
+                name,
+                "getAvailableModels",
+                "Failed to parse model discovery response: " + e.getMessage()
+            );
         }
     }
 

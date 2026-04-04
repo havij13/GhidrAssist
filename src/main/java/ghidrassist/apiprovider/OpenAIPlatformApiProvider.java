@@ -37,8 +37,9 @@ public class OpenAIPlatformApiProvider extends APIProvider implements FunctionCa
 
     private volatile boolean isCancelled = false;
 
-    public OpenAIPlatformApiProvider(String name, String model, Integer maxTokens, String url, String key, boolean disableTlsVerification, Integer timeout) {
-        super(name, ProviderType.OPENAI_PLATFORM_API, model, maxTokens, url, key, disableTlsVerification, timeout);
+    public OpenAIPlatformApiProvider(String name, String model, Integer maxTokens, String url, String key,
+                                     boolean disableTlsVerification, boolean bypassProxy, Integer timeout) {
+        super(name, ProviderType.OPENAI_PLATFORM_API, model, maxTokens, url, key, disableTlsVerification, bypassProxy, timeout);
     }
 
     public static OpenAIPlatformApiProvider fromConfig(APIProviderConfig config) {
@@ -49,6 +50,7 @@ public class OpenAIPlatformApiProvider extends APIProvider implements FunctionCa
             config.getUrl(),
             config.getKey(),
             config.isDisableTlsVerification(),
+            config.isBypassProxy(),
             config.getTimeout()
         );
     }
@@ -56,7 +58,7 @@ public class OpenAIPlatformApiProvider extends APIProvider implements FunctionCa
     @Override
     protected OkHttpClient buildClient() {
         try {
-            OkHttpClient.Builder builder = new OkHttpClient.Builder()
+            OkHttpClient.Builder builder = configureClientBuilder(new OkHttpClient.Builder())
                 .connectTimeout(super.timeout)
                 .readTimeout(super.timeout)
                 .writeTimeout(super.timeout)
@@ -428,35 +430,101 @@ public class OpenAIPlatformApiProvider extends APIProvider implements FunctionCa
 
     @Override
     public List<String> getAvailableModels() throws APIProviderException {
-        Request request = new Request.Builder()
-            .url(url + OPENAI_MODELS_ENDPOINT)
-            .build();
+        APIProviderException lastError = null;
 
-        try (Response response = executeWithRetry(request, "getAvailableModels")) {
-            String responseBody = response.body().string();
-            try {
-                JsonObject responseObj = gson.fromJson(responseBody, JsonObject.class);
-                List<String> modelIds = new ArrayList<>();
-                
-                if (!responseObj.has("data")) {
-                    throw new ResponseException(name, "get_models", 
-                        ResponseException.ResponseErrorType.MISSING_REQUIRED_FIELD);
+        for (String endpoint : getModelsEndpointCandidates()) {
+            Request request = new Request.Builder()
+                .url(endpoint)
+                .header("Accept", "application/json")
+                .get()
+                .build();
+
+            try (Response response = client.newCall(request).execute()) {
+                if (response.code() == 401 || response.code() == 403) {
+                    throw handleHttpError(response, "getAvailableModels");
                 }
-                
-                JsonArray models = responseObj.getAsJsonArray("data");
-                for (JsonElement model : models) {
-                    if (model.isJsonObject() && model.getAsJsonObject().has("id")) {
-                        modelIds.add(model.getAsJsonObject().get("id").getAsString());
-                    }
+
+                if (!response.isSuccessful()) {
+                    lastError = handleHttpError(response, "getAvailableModels");
+                    continue;
                 }
-                
-                return modelIds;
-            } catch (JsonSyntaxException e) {
-                throw new ResponseException(name, "getAvailableModels", 
-                    ResponseException.ResponseErrorType.MALFORMED_JSON, e);
+
+                String responseBody = response.body() != null ? response.body().string() : "";
+                List<String> modelIds = extractModelIdsFromResponse(responseBody);
+                if (!modelIds.isEmpty()) {
+                    return modelIds;
+                }
+
+                lastError = new APIProviderException(
+                    APIProviderException.ErrorCategory.SERVICE_ERROR,
+                    name,
+                    "getAvailableModels",
+                    "No available models were found."
+                );
+            } catch (IOException e) {
+                lastError = handleNetworkError(e, "getAvailableModels");
+            } catch (APIProviderException e) {
+                lastError = e;
             }
-        } catch (IOException e) {
-            throw handleNetworkError(e, "getAvailableModels");
+        }
+
+        if (lastError != null) {
+            throw lastError;
+        }
+
+        throw new APIProviderException(
+            APIProviderException.ErrorCategory.SERVICE_ERROR,
+            name,
+            "getAvailableModels",
+            "No available models were found."
+        );
+    }
+
+    protected List<String> getModelsEndpointCandidates() {
+        List<String> candidates = new ArrayList<>();
+        String baseUrl = (url != null ? url.trim() : "").replaceAll("/+$", "");
+
+        if (baseUrl.isEmpty()) {
+            candidates.add("https://api.openai.com/v1/models");
+            return candidates;
+        }
+
+        if (baseUrl.endsWith("/models")) {
+            candidates.add(baseUrl);
+            return candidates;
+        }
+
+        candidates.add(baseUrl + "/models");
+        if (!baseUrl.endsWith("/v1")) {
+            candidates.add(baseUrl + "/v1/models");
+        }
+
+        return candidates;
+    }
+
+    protected List<String> extractModelIdsFromResponse(String responseBody) throws APIProviderException {
+        try {
+            JsonElement parsed = JsonParser.parseString(responseBody);
+            if (!parsed.isJsonObject()) {
+                throw new ResponseException(name, "getAvailableModels",
+                    ResponseException.ResponseErrorType.MALFORMED_JSON);
+            }
+
+            JsonObject responseObj = parsed.getAsJsonObject();
+            JsonArray models = responseObj.has("data") && responseObj.get("data").isJsonArray()
+                ? responseObj.getAsJsonArray("data")
+                : new JsonArray();
+
+            List<String> modelIds = new ArrayList<>();
+            for (JsonElement model : models) {
+                if (model.isJsonObject() && model.getAsJsonObject().has("id")) {
+                    modelIds.add(model.getAsJsonObject().get("id").getAsString());
+                }
+            }
+            return modelIds;
+        } catch (JsonSyntaxException e) {
+            throw new ResponseException(name, "getAvailableModels",
+                ResponseException.ResponseErrorType.MALFORMED_JSON, e);
         }
     }
 

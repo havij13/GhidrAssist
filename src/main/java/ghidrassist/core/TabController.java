@@ -370,7 +370,7 @@ public class TabController {
 
                         Msg.info(this, "Creating SemanticExtractor with provider: " + providerConfig.getType());
                         SemanticExtractor semanticExtractor = new SemanticExtractor(
-                                providerConfig.createProvider(), graph);
+                                providerConfig.createProvider(), graph, analysisDataService.getContext());
 
                         // Initialize streaming UI
                         // Note: StreamingMarkdownRenderer already calls invokeLater, so callback runs on EDT

@@ -38,8 +38,8 @@ public class AzureOpenAIProvider extends APIProvider
     private String deploymentName;
 
     public AzureOpenAIProvider(String name, String model, Integer maxTokens, String url, String key,
-            boolean disableTlsVerification, Integer timeout) {
-        super(name, ProviderType.AZURE_OPENAI, model, maxTokens, url, key, disableTlsVerification, timeout);
+            boolean disableTlsVerification, boolean bypassProxy, Integer timeout) {
+        super(name, ProviderType.AZURE_OPENAI, model, maxTokens, url, key, disableTlsVerification, bypassProxy, timeout);
 
         // Extract deployment name from model if it contains a deployment name
         // Format: deploymentName or deploymentName:modelName
@@ -60,13 +60,14 @@ public class AzureOpenAIProvider extends APIProvider
                 config.getUrl(),
                 config.getKey(),
                 config.isDisableTlsVerification(),
+                config.isBypassProxy(),
                 config.getTimeout());
     }
 
     @Override
     protected OkHttpClient buildClient() {
         try {
-            OkHttpClient.Builder builder = new OkHttpClient.Builder()
+            OkHttpClient.Builder builder = configureClientBuilder(new OkHttpClient.Builder())
                     .connectTimeout(super.timeout)
                     .readTimeout(super.timeout)
                     .writeTimeout(super.timeout)

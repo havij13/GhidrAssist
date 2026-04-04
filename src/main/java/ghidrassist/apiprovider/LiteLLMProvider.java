@@ -46,8 +46,8 @@ public class LiteLLMProvider extends OpenAIPlatformApiProvider {
     private volatile boolean isCancelled = false;
 
     public LiteLLMProvider(String name, String model, Integer maxTokens, String url,
-                           String key, boolean disableTlsVerification, Integer timeout) {
-        super(name, model, maxTokens, url, key, disableTlsVerification, timeout);
+                           String key, boolean disableTlsVerification, boolean bypassProxy, Integer timeout) {
+        super(name, model, maxTokens, url, key, disableTlsVerification, bypassProxy, timeout);
 
         // Override the type to LITELLM
         this.type = ProviderType.LITELLM;
@@ -75,6 +75,7 @@ public class LiteLLMProvider extends OpenAIPlatformApiProvider {
             config.getUrl(),
             config.getKey(),
             config.isDisableTlsVerification(),
+            config.isBypassProxy(),
             config.getTimeout()
         );
     }

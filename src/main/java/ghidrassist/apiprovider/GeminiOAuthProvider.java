@@ -21,6 +21,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Random;
 import java.util.UUID;
+import java.util.stream.Collectors;
 
 /**
  * Google Gemini OAuth Provider - Routes requests through the Code Assist proxy.
@@ -47,6 +48,18 @@ public class GeminiOAuthProvider extends APIProvider implements FunctionCallingP
     private static final String CODE_ASSIST_ENDPOINT = "https://cloudcode-pa.googleapis.com";
     private static final String CODE_ASSIST_API_VERSION = "v1internal";
     private static final String GEMINI_CLI_VERSION = "1.0.0";
+    private static final List<String> CLI_VISIBLE_AUTO_MODELS = List.of("auto-gemini-3", "auto-gemini-2.5");
+    private static final List<String> CLI_VISIBLE_PREVIEW_MODELS = List.of(
+        "gemini-3.1-flash-lite-preview",
+        "gemini-3.1-pro-preview",
+        "gemini-3-pro-preview",
+        "gemini-3-flash-preview"
+    );
+    private static final List<String> CLI_VISIBLE_STABLE_MODELS = List.of(
+        "gemini-2.5-pro",
+        "gemini-2.5-flash",
+        "gemini-2.5-flash-lite"
+    );
 
     // Default model
     private static final String DEFAULT_MODEL = "gemini-2.5-flash";
@@ -68,10 +81,11 @@ public class GeminiOAuthProvider extends APIProvider implements FunctionCallingP
     private volatile long lastRequestTimeMs = 0;
 
     public GeminiOAuthProvider(String name, String model, Integer maxTokens, String url,
-                               String key, boolean disableTlsVerification, Integer timeout) {
+                               String key, boolean disableTlsVerification, boolean bypassProxy, Integer timeout) {
         super(name, ProviderType.GEMINI_OAUTH,
               model != null && !model.isEmpty() ? model : DEFAULT_MODEL,
-              maxTokens, CODE_ASSIST_ENDPOINT, key, disableTlsVerification, timeout);
+              maxTokens, url != null && !url.isEmpty() ? url : CODE_ASSIST_ENDPOINT, key,
+              disableTlsVerification, bypassProxy, timeout);
 
         this.tokenManager = new GeminiOAuthTokenManager(key);
         this.sessionId = generateSessionId();
@@ -94,7 +108,7 @@ public class GeminiOAuthProvider extends APIProvider implements FunctionCallingP
     @Override
     protected OkHttpClient buildClient() {
         try {
-            OkHttpClient.Builder builder = new OkHttpClient.Builder()
+            OkHttpClient.Builder builder = configureClientBuilder(new OkHttpClient.Builder())
                 .connectTimeout(super.timeout)
                 .readTimeout(super.timeout)
                 .writeTimeout(super.timeout)
@@ -152,6 +166,43 @@ public class GeminiOAuthProvider extends APIProvider implements FunctionCallingP
         else if ("aarch64".equals(arch) || "arm64".equals(arch)) arch = "arm64";
 
         return "GeminiCLI/" + GEMINI_CLI_VERSION + "/" + this.model + " (" + platform + "; " + arch + ")";
+    }
+
+    private String getMethodUrl(String method) {
+        String baseUrl = this.url != null && !this.url.isBlank() ? this.url.trim() : CODE_ASSIST_ENDPOINT;
+        while (baseUrl.endsWith("/")) {
+            baseUrl = baseUrl.substring(0, baseUrl.length() - 1);
+        }
+        if (baseUrl.endsWith("/" + CODE_ASSIST_API_VERSION)) {
+            return baseUrl + ":" + method;
+        }
+        return baseUrl + "/" + CODE_ASSIST_API_VERSION + ":" + method;
+    }
+
+    private boolean hasPreviewAccess(JsonArray buckets) {
+        for (JsonElement bucketElement : buckets) {
+            if (!bucketElement.isJsonObject()) {
+                continue;
+            }
+            JsonObject bucket = bucketElement.getAsJsonObject();
+            if (!bucket.has("modelId") || bucket.get("modelId").isJsonNull()) {
+                continue;
+            }
+            String modelId = bucket.get("modelId").getAsString().toLowerCase();
+            if (modelId.contains("preview") || modelId.contains("gemini-3")) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private List<String> buildVisibleCatalog(boolean includePreview) {
+        List<String> models = new ArrayList<>(CLI_VISIBLE_AUTO_MODELS);
+        models.addAll(CLI_VISIBLE_STABLE_MODELS);
+        if (includePreview) {
+            models.addAll(CLI_VISIBLE_PREVIEW_MODELS);
+        }
+        return models.stream().distinct().collect(Collectors.toList());
     }
 
     // =========================================================================
@@ -729,7 +780,7 @@ public class GeminiOAuthProvider extends APIProvider implements FunctionCallingP
             JsonObject wrapped = wrapRequest(requestPayload);
             Headers headers = getGeminiHeaders().build();
 
-            String requestUrl = CODE_ASSIST_ENDPOINT + "/" + CODE_ASSIST_API_VERSION + ":generateContent";
+            String requestUrl = getMethodUrl("generateContent");
 
             Request request = new Request.Builder()
                 .url(requestUrl)
@@ -778,7 +829,7 @@ public class GeminiOAuthProvider extends APIProvider implements FunctionCallingP
             Headers headers = getGeminiHeaders().build();
 
             // Streaming via ?alt=sse
-            String requestUrl = CODE_ASSIST_ENDPOINT + "/" + CODE_ASSIST_API_VERSION + ":streamGenerateContent?alt=sse";
+            String requestUrl = getMethodUrl("streamGenerateContent") + "?alt=sse";
 
             Request request = new Request.Builder()
                 .url(requestUrl)
@@ -810,7 +861,7 @@ public class GeminiOAuthProvider extends APIProvider implements FunctionCallingP
             JsonObject wrapped = wrapRequest(requestPayload);
             Headers headers = getGeminiHeaders().build();
 
-            String requestUrl = CODE_ASSIST_ENDPOINT + "/" + CODE_ASSIST_API_VERSION + ":generateContent";
+            String requestUrl = getMethodUrl("generateContent");
 
             Request request = new Request.Builder()
                 .url(requestUrl)
@@ -861,7 +912,7 @@ public class GeminiOAuthProvider extends APIProvider implements FunctionCallingP
             JsonObject wrapped = wrapRequest(requestPayload);
             Headers headers = getGeminiHeaders().build();
 
-            String requestUrl = CODE_ASSIST_ENDPOINT + "/" + CODE_ASSIST_API_VERSION + ":generateContent";
+            String requestUrl = getMethodUrl("generateContent");
 
             String requestJson = gson.toJson(wrapped);
             // Debug: Log tool count and first tool name
@@ -995,13 +1046,56 @@ public class GeminiOAuthProvider extends APIProvider implements FunctionCallingP
 
     @Override
     public List<String> getAvailableModels() throws APIProviderException {
-        // Return commonly available Gemini models
-        List<String> models = new ArrayList<>();
-        models.add("gemini-2.5-flash");
-        models.add("gemini-2.5-pro");
-        models.add("gemini-2.0-flash");
-        models.add("gemini-2.0-flash-lite");
-        return models;
+        if (!isAuthenticated()) {
+            throw new AuthenticationException(name, "getAvailableModels", 401, null,
+                "Not authenticated. Please authenticate via Settings > Edit Provider > Authenticate.");
+        }
+
+        String projectId = tokenManager.getProjectId();
+        if (projectId == null || projectId.isBlank()) {
+            throw new APIProviderException(APIProviderException.ErrorCategory.CONFIGURATION,
+                name, "getAvailableModels",
+                "Gemini OAuth is missing a project ID. Please re-authenticate.");
+        }
+
+        try {
+            Headers headers = getGeminiHeaders().build();
+            JsonObject body = new JsonObject();
+            body.addProperty("project", projectId);
+
+            Request request = new Request.Builder()
+                .url(getMethodUrl("retrieveUserQuota"))
+                .post(RequestBody.create(gson.toJson(body).getBytes(StandardCharsets.UTF_8), JSON_MEDIA_TYPE))
+                .headers(headers)
+                .build();
+
+            try (Response response = executeWithRateLimitRetry(request, "getAvailableModels")) {
+                if (response.code() == 401) {
+                    throw new AuthenticationException(name, "getAvailableModels", 401,
+                        response.body() != null ? response.body().string() : null,
+                        "Authentication failed. Please re-authenticate.");
+                }
+                if (!response.isSuccessful()) {
+                    String errorBody = response.body() != null ? response.body().string() : "";
+                    throw new APIProviderException(APIProviderException.ErrorCategory.SERVICE_ERROR,
+                        name, "getAvailableModels",
+                        "API error " + response.code() + ": " + errorBody);
+                }
+
+                String responseBody = response.body() != null ? response.body().string() : "{}";
+                JsonObject responseObj = gson.fromJson(responseBody, JsonObject.class);
+                responseObj = unwrapResponse(responseObj);
+                JsonArray buckets = responseObj.has("buckets") ? responseObj.getAsJsonArray("buckets") : new JsonArray();
+                if (buckets.isEmpty()) {
+                    throw new APIProviderException(APIProviderException.ErrorCategory.SERVICE_ERROR,
+                        name, "getAvailableModels", "No model quota data was returned by Code Assist.");
+                }
+
+                return buildVisibleCatalog(hasPreviewAccess(buckets));
+            }
+        } catch (IOException e) {
+            throw handleNetworkError(e, "getAvailableModels");
+        }
     }
 
     @Override

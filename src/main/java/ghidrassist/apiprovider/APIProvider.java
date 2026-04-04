@@ -2,6 +2,7 @@ package ghidrassist.apiprovider;
 
 import java.io.IOException;
 import java.net.ConnectException;
+import java.net.Proxy;
 import java.net.SocketTimeoutException;
 import java.net.UnknownHostException;
 import java.time.Duration;
@@ -42,6 +43,7 @@ public abstract class APIProvider implements ChatProvider {
     protected String url;
     protected String key;
     protected boolean disableTlsVerification;
+    protected boolean bypassProxy;
     protected ProviderType type;
     protected OkHttpClient client;
     protected Duration timeout;
@@ -49,15 +51,17 @@ public abstract class APIProvider implements ChatProvider {
     protected ReasoningConfig reasoningConfig;
 
     public APIProvider(String name, ProviderType type, String model, Integer maxTokens,
-                      String url, String key, boolean disableTlsVerification, Integer timeout2) {
+                      String url, String key, boolean disableTlsVerification, boolean bypassProxy, Integer timeout2) {
         this.name = name;
         this.type = type;
         this.model = model;
         this.maxTokens = maxTokens;
-        this.url = url.endsWith("/") ? url : url + "/";
+        String normalizedUrl = url != null ? url : "";
+        this.url = normalizedUrl.endsWith("/") ? normalizedUrl : normalizedUrl + "/";
         this.key = key;
         this.disableTlsVerification = disableTlsVerification;
-        this.timeout = Duration.ofSeconds(timeout2);
+        this.bypassProxy = bypassProxy;
+        this.timeout = Duration.ofSeconds(timeout2 != null ? timeout2 : 90);
         this.retryHandler = new RetryHandler(50, this);
         this.reasoningConfig = new ReasoningConfig(); // Default to NONE
         this.client = buildClient();
@@ -71,6 +75,7 @@ public abstract class APIProvider implements ChatProvider {
     public String getUrl() { return url; }
     public String getKey() { return key; }
     public boolean isDisableTlsVerification() { return disableTlsVerification; }
+    public boolean isBypassProxy() { return bypassProxy; }
 
     // Reasoning configuration
     public ReasoningConfig getReasoningConfig() {
@@ -95,8 +100,22 @@ public abstract class APIProvider implements ChatProvider {
     public abstract String createChatCompletionWithFunctionsFullResponse(List<ChatMessage> messages, List<Map<String, Object>> functions) throws APIProviderException;
     public abstract List<String> getAvailableModels() throws APIProviderException;
     public abstract void getEmbeddingsAsync(String text, EmbeddingCallback callback);
-	public void setTimeout(Integer timeout2) { this.timeout = Duration.ofSeconds(timeout2); }
-	public Integer getTimeout() { return this.timeout.toSecondsPart(); }
+	public void setTimeout(Integer timeout2) { this.timeout = Duration.ofSeconds(timeout2 != null ? timeout2 : 90); }
+	public Integer getTimeout() { return Math.toIntExact(this.timeout.getSeconds()); }
+
+    public void testConnection() throws APIProviderException {
+        List<ChatMessage> messages = new java.util.ArrayList<>();
+        messages.add(new ChatMessage(ChatMessage.ChatMessageRole.USER,
+            "Test message. Please respond with 'OK'."));
+        createChatCompletion(messages);
+    }
+
+    protected OkHttpClient.Builder configureClientBuilder(OkHttpClient.Builder builder) {
+        if (bypassProxy) {
+            builder.proxy(Proxy.NO_PROXY);
+        }
+        return builder;
+    }
 
     
     public double[] getEmbeddings(String text) throws APIProviderException {

@@ -11,8 +11,8 @@ import ghidrassist.apiprovider.exceptions.APIProviderException;
 public class GeminiPlatformApiProvider extends OpenAIPlatformApiProvider {
 
     public GeminiPlatformApiProvider(String name, String model, Integer maxTokens, String url,
-                                      String key, boolean disableTlsVerification, Integer timeout) {
-        super(name, model, maxTokens, url, key, disableTlsVerification, timeout);
+                                      String key, boolean disableTlsVerification, boolean bypassProxy, Integer timeout) {
+        super(name, model, maxTokens, url, key, disableTlsVerification, bypassProxy, timeout);
 
         // Override the type to GEMINI_PLATFORM_API
         this.type = ProviderType.GEMINI_PLATFORM_API;
@@ -26,6 +26,7 @@ public class GeminiPlatformApiProvider extends OpenAIPlatformApiProvider {
             config.getUrl(),
             config.getKey(),
             config.isDisableTlsVerification(),
+            config.isBypassProxy(),
             config.getTimeout()
         );
     }

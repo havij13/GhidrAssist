@@ -4,6 +4,8 @@ import com.google.gson.Gson;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
+import com.google.gson.stream.JsonReader;
 import ghidra.util.Msg;
 import ghidrassist.LlmApi.LlmResponseHandler;
 import ghidrassist.apiprovider.capabilities.FunctionCallingProvider;
@@ -15,10 +17,12 @@ import okio.BufferedSource;
 
 import javax.net.ssl.*;
 import java.io.IOException;
+import java.io.StringReader;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.stream.Collectors;
 
 /**
  * OpenAI OAuth Provider - Uses OAuth authentication for ChatGPT Pro/Plus subscriptions.
@@ -46,8 +50,10 @@ public class OpenAIOAuthProvider extends APIProvider implements FunctionCallingP
     private static final Gson gson = new Gson();
     private static final MediaType JSON = MediaType.get("application/json");
     
-    // Codex API endpoint
-    private static final String CODEX_API_ENDPOINT = "https://chatgpt.com/backend-api/codex/responses";
+    private static final String CODEX_API_BASE_URL = "https://chatgpt.com/backend-api/codex";
+    private static final String CODEX_RESPONSES_ENDPOINT = "responses";
+    private static final String CODEX_MODELS_ENDPOINT = "models";
+    private static final String CODEX_MODELS_CLIENT_VERSION = "0.116.0";
     
     // Default model
     private static final String DEFAULT_MODEL = "gpt-5.1-codex";
@@ -67,10 +73,11 @@ public class OpenAIOAuthProvider extends APIProvider implements FunctionCallingP
      * @param timeout Timeout in seconds
      */
     public OpenAIOAuthProvider(String name, String model, Integer maxTokens, String url,
-                               String key, boolean disableTlsVerification, Integer timeout) {
+                               String key, boolean disableTlsVerification, boolean bypassProxy, Integer timeout) {
         super(name, ProviderType.OPENAI_OAUTH, 
               model != null && !model.isEmpty() ? model : DEFAULT_MODEL,
-              maxTokens, CODEX_API_ENDPOINT, key, disableTlsVerification, timeout);
+              maxTokens, url != null && !url.isEmpty() ? url : CODEX_API_BASE_URL + "/" + CODEX_RESPONSES_ENDPOINT, key,
+              disableTlsVerification, bypassProxy, timeout);
         
         // Initialize token manager with credentials from key field
         this.tokenManager = new OpenAIOAuthTokenManager(key);
@@ -102,7 +109,7 @@ public class OpenAIOAuthProvider extends APIProvider implements FunctionCallingP
     @Override
     protected OkHttpClient buildClient() {
         try {
-            OkHttpClient.Builder builder = new OkHttpClient.Builder()
+            OkHttpClient.Builder builder = configureClientBuilder(new OkHttpClient.Builder())
                 .connectTimeout(super.timeout)
                 .readTimeout(super.timeout)
                 .writeTimeout(super.timeout)
@@ -160,6 +167,107 @@ public class OpenAIOAuthProvider extends APIProvider implements FunctionCallingP
         }
         
         return headers;
+    }
+
+    private Headers getModelDiscoveryHeaders() throws IOException {
+        String accessToken = tokenManager.getValidAccessToken();
+
+        Headers.Builder headers = new Headers.Builder()
+            .add("Authorization", "Bearer " + accessToken)
+            .add("Accept", "application/json");
+
+        String accountId = tokenManager.getAccountId();
+        if (accountId != null && !accountId.isEmpty()) {
+            headers.add("ChatGPT-Account-ID", accountId);
+        }
+
+        return headers.build();
+    }
+
+    private JsonObject parseModelDiscoveryPayload(String responseBody) throws APIProviderException {
+        if (responseBody == null) {
+            throw new APIProviderException(APIProviderException.ErrorCategory.SERVICE_ERROR,
+                name, "getAvailableModels", "Model discovery returned an empty response.");
+        }
+
+        String trimmed = responseBody.trim();
+        if (trimmed.isEmpty()) {
+            throw new APIProviderException(APIProviderException.ErrorCategory.SERVICE_ERROR,
+                name, "getAvailableModels", "Model discovery returned an empty response.");
+        }
+
+        // Some backends prepend non-JSON guards or whitespace before the actual payload.
+        int objectStart = trimmed.indexOf('{');
+        int arrayStart = trimmed.indexOf('[');
+        int start = -1;
+        if (objectStart >= 0 && arrayStart >= 0) {
+            start = Math.min(objectStart, arrayStart);
+        } else if (objectStart >= 0) {
+            start = objectStart;
+        } else if (arrayStart >= 0) {
+            start = arrayStart;
+        }
+        if (start > 0) {
+            trimmed = trimmed.substring(start);
+        }
+
+        try {
+            JsonReader reader = new JsonReader(new StringReader(trimmed));
+            reader.setLenient(true);
+            JsonElement parsed = JsonParser.parseReader(reader);
+
+            if (parsed.isJsonObject()) {
+                return parsed.getAsJsonObject();
+            }
+
+            if (parsed.isJsonPrimitive() && parsed.getAsJsonPrimitive().isString()) {
+                String nested = parsed.getAsString();
+                JsonReader nestedReader = new JsonReader(new StringReader(nested));
+                nestedReader.setLenient(true);
+                JsonElement nestedParsed = JsonParser.parseReader(nestedReader);
+                if (nestedParsed.isJsonObject()) {
+                    return nestedParsed.getAsJsonObject();
+                }
+            }
+        } catch (Exception e) {
+            throw new APIProviderException(APIProviderException.ErrorCategory.SERVICE_ERROR,
+                name, "getAvailableModels",
+                "Failed to parse model discovery response: " + e.getMessage());
+        }
+
+        throw new APIProviderException(APIProviderException.ErrorCategory.SERVICE_ERROR,
+            name, "getAvailableModels",
+            "Model discovery returned an unexpected payload.");
+    }
+
+    private String getApiBaseUrl() {
+        String configuredUrl = this.url != null ? this.url.trim() : "";
+        if (configuredUrl.isEmpty()) {
+            return CODEX_API_BASE_URL;
+        }
+
+        String normalized = configuredUrl.endsWith("/") ? configuredUrl.substring(0, configuredUrl.length() - 1) : configuredUrl;
+        if ("https://chatgpt.com".equalsIgnoreCase(normalized)
+                || "http://chatgpt.com".equalsIgnoreCase(normalized)
+                || "https://www.chatgpt.com".equalsIgnoreCase(normalized)
+                || "http://www.chatgpt.com".equalsIgnoreCase(normalized)) {
+            return CODEX_API_BASE_URL;
+        }
+        if (normalized.endsWith("/" + CODEX_RESPONSES_ENDPOINT)) {
+            return normalized.substring(0, normalized.length() - (CODEX_RESPONSES_ENDPOINT.length() + 1));
+        }
+        if (normalized.endsWith("/" + CODEX_MODELS_ENDPOINT)) {
+            return normalized.substring(0, normalized.length() - (CODEX_MODELS_ENDPOINT.length() + 1));
+        }
+        return normalized;
+    }
+
+    private String getResponsesEndpoint() {
+        return getApiBaseUrl() + "/" + CODEX_RESPONSES_ENDPOINT;
+    }
+
+    private String getModelsEndpoint() {
+        return getApiBaseUrl() + "/" + CODEX_MODELS_ENDPOINT + "?client_version=" + CODEX_MODELS_CLIENT_VERSION;
     }
     
     // =========================================================================
@@ -437,7 +545,7 @@ public class OpenAIOAuthProvider extends APIProvider implements FunctionCallingP
             Headers headers = getCodexHeaders().build();
             
             Request request = new Request.Builder()
-                .url(CODEX_API_ENDPOINT)
+                .url(getResponsesEndpoint())
                 .post(buildJsonRequestBody(payload))
                 .headers(headers)
                 .build();
@@ -484,7 +592,7 @@ public class OpenAIOAuthProvider extends APIProvider implements FunctionCallingP
             Headers headers = getCodexHeaders().build();
             
             Request request = new Request.Builder()
-                .url(CODEX_API_ENDPOINT)
+                .url(getResponsesEndpoint())
                 .post(buildJsonRequestBody(payload))
                 .headers(headers)
                 .build();
@@ -633,7 +741,7 @@ public class OpenAIOAuthProvider extends APIProvider implements FunctionCallingP
             Headers headers = getCodexHeaders().build();
             
             Request request = new Request.Builder()
-                .url(CODEX_API_ENDPOINT)
+                .url(getResponsesEndpoint())
                 .post(buildJsonRequestBody(payload))
                 .headers(headers)
                 .build();
@@ -678,7 +786,7 @@ public class OpenAIOAuthProvider extends APIProvider implements FunctionCallingP
             Headers headers = getCodexHeaders().build();
             
             Request request = new Request.Builder()
-                .url(CODEX_API_ENDPOINT)
+                .url(getResponsesEndpoint())
                 .post(buildJsonRequestBody(payload))
                 .headers(headers)
                 .build();
@@ -818,14 +926,60 @@ public class OpenAIOAuthProvider extends APIProvider implements FunctionCallingP
     
     @Override
     public List<String> getAvailableModels() throws APIProviderException {
-        // Return commonly available Codex models
-        // The API will reject invalid models for the user's subscription
-        List<String> models = new ArrayList<>();
-        models.add("gpt-5.1-codex");
-        models.add("gpt-4.1-codex");
-        models.add("o3");
-        models.add("o4-mini");
-        return models;
+        if (!isAuthenticated()) {
+            throw new AuthenticationException(name, "getAvailableModels", 401, null,
+                "Not authenticated. Please authenticate via Settings > Edit Provider > Authenticate.");
+        }
+
+        try {
+            Headers headers = getModelDiscoveryHeaders();
+
+            Request request = new Request.Builder()
+                .url(getModelsEndpoint())
+                .get()
+                .headers(headers)
+                .build();
+
+            try (Response response = client.newCall(request).execute()) {
+                if (response.code() == 401) {
+                    throw new AuthenticationException(name, "getAvailableModels", 401,
+                        response.body() != null ? response.body().string() : null,
+                        "Authentication failed. Please re-authenticate.");
+                }
+                if (!response.isSuccessful()) {
+                    String errorBody = response.body() != null ? response.body().string() : "";
+                    throw new APIProviderException(APIProviderException.ErrorCategory.SERVICE_ERROR,
+                        name, "getAvailableModels",
+                        "API error " + response.code() + ": " + errorBody);
+                }
+
+                String responseBody = response.body() != null ? response.body().string() : "{}";
+                JsonObject responseObj = parseModelDiscoveryPayload(responseBody);
+                JsonArray data = responseObj.has("models") && responseObj.get("models").isJsonArray()
+                    ? responseObj.getAsJsonArray("models")
+                    : new JsonArray();
+                List<String> models = new ArrayList<>();
+
+                for (JsonElement element : data) {
+                    if (!element.isJsonObject()) {
+                        continue;
+                    }
+                    JsonObject modelObj = element.getAsJsonObject();
+                    if (modelObj.has("slug") && !modelObj.get("slug").isJsonNull()) {
+                        models.add(modelObj.get("slug").getAsString());
+                    }
+                }
+
+                models = models.stream().distinct().collect(Collectors.toList());
+                if (models.isEmpty()) {
+                    throw new APIProviderException(APIProviderException.ErrorCategory.SERVICE_ERROR,
+                        name, "getAvailableModels", "No available models were returned by the API.");
+                }
+                return models;
+            }
+        } catch (IOException e) {
+            throw handleNetworkError(e, "getAvailableModels");
+        }
     }
     
     @Override

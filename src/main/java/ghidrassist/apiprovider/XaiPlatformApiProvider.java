@@ -10,8 +10,8 @@ import ghidrassist.apiprovider.exceptions.APIProviderException;
 public class XaiPlatformApiProvider extends OpenAIPlatformApiProvider {
 
     public XaiPlatformApiProvider(String name, String model, Integer maxTokens, String url,
-                                   String key, boolean disableTlsVerification, Integer timeout) {
-        super(name, model, maxTokens, url, key, disableTlsVerification, timeout);
+                                   String key, boolean disableTlsVerification, boolean bypassProxy, Integer timeout) {
+        super(name, model, maxTokens, url, key, disableTlsVerification, bypassProxy, timeout);
 
         // Override the type to XAI_PLATFORM_API
         this.type = ProviderType.XAI_PLATFORM_API;
@@ -25,6 +25,7 @@ public class XaiPlatformApiProvider extends OpenAIPlatformApiProvider {
             config.getUrl(),
             config.getKey(),
             config.isDisableTlsVerification(),
+            config.isBypassProxy(),
             config.getTimeout()
         );
     }
