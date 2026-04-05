@@ -21,6 +21,8 @@ import ghidrassist.workers.SymGraphApplyWorker;
 import ghidrassist.workers.SymGraphPullWorker;
 
 import javax.swing.*;
+import java.io.File;
+import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -53,6 +55,7 @@ public class SymGraphController {
     private boolean pendingPushGraph;
     private String pendingPushVisibility = "public";
     private String pendingApplyBaseMessage;
+    private String lastBinarySha;
 
     public SymGraphController(
             GhidrAssistPlugin plugin,
@@ -116,6 +119,7 @@ public class SymGraphController {
                                     stats.getSymbolCount(),
                                     stats.getFunctionCount(),
                                     stats.getGraphNodeCount(),
+                                    stats.getGraphEdgeCount(),
                                     stats.getLastQueriedAt(),
                                     result.getRevisions(),
                                     result.getLatestRevision(),
@@ -270,6 +274,7 @@ public class SymGraphController {
         final List<Map<String, Object>> symbolsToPush = new ArrayList<>(selectedSymbols);
         final List<Map<String, Object>> documentsToPush = new ArrayList<>(selectedDocuments);
         final Map<String, Object> graphDataToPush = graphData;
+        final Map<String, Object> binaryMetadata = buildOriginalBinaryMetadata();
         final String visibilityForPush = resolvedVisibility;
         Thread pushThread = new Thread(() -> {
             try {
@@ -304,6 +309,15 @@ public class SymGraphController {
                 }
                 Integer targetRevision = revisionResult.getBinaryRevision();
                 totalResult.setBinaryRevision(targetRevision);
+
+                if (!binaryMetadata.isEmpty()) {
+                    PushResult metadataResult = symGraphService.updateBinaryMetadata(sha256, binaryMetadata);
+                    if (!metadataResult.isSuccess()) {
+                        final PushResult failureResult = metadataResult;
+                        SwingUtilities.invokeLater(() -> handlePushFailure(failureResult));
+                        return;
+                    }
+                }
 
                 // Push symbols in chunks with progress
                 if (!symbolsToPush.isEmpty()) {
@@ -873,11 +887,32 @@ public class SymGraphController {
         }
 
         if (plugin.getCurrentProgram() != null) {
-            String name = plugin.getCurrentProgram().getName();
+            Map<String, Object> binaryMetadata = buildOriginalBinaryMetadata();
+            String name = valueAsString(binaryMetadata.get("file_name"));
+            if (name == null || name.isBlank()) {
+                name = plugin.getCurrentProgram().getName();
+            }
             String sha256 = getProgramSHA256();
             symGraphTab.setBinaryInfo(name, sha256, buildLocalSummary(sha256));
+            if (sha256 != null && !sha256.equals(lastBinarySha)) {
+                lastBinarySha = sha256;
+                symGraphTab.hideStats();
+                symGraphTab.resetQueryStatus();
+                symGraphTab.setOpenBinaryUrl(null);
+                symGraphTab.clearConflicts();
+                symGraphTab.clearPushPreview();
+                if (symGraphTab.isAutoRefreshEnabled()) {
+                    handleQuery();
+                }
+            }
         } else {
+            lastBinarySha = null;
             symGraphTab.setBinaryInfo(null, null);
+            symGraphTab.hideStats();
+            symGraphTab.resetQueryStatus();
+            symGraphTab.setOpenBinaryUrl(null);
+            symGraphTab.clearConflicts();
+            symGraphTab.clearPushPreview();
         }
     }
 
@@ -913,6 +948,290 @@ public class SymGraphController {
 
     private String valueAsString(Object value) {
         return value != null ? value.toString() : null;
+    }
+
+    private Map<String, Object> buildOriginalBinaryMetadata() {
+        Map<String, Object> metadata = new HashMap<>();
+        Program program = plugin.getCurrentProgram();
+        if (program == null) {
+            return metadata;
+        }
+
+        String executablePath = extractExecutablePath(program);
+        String fileName = stripPath(executablePath);
+        if (fileName == null || fileName.isBlank()) {
+            fileName = stripPath(program.getName());
+        }
+        if (fileName != null && !fileName.isBlank()) {
+            metadata.put("file_name", fileName);
+        }
+
+        if (executablePath != null && !executablePath.isBlank()) {
+            try {
+                File binaryFile = new File(executablePath);
+                if (binaryFile.isFile()) {
+                    metadata.put("file_size", binaryFile.length());
+                }
+            } catch (SecurityException ignored) {
+            }
+        }
+
+        try {
+            String languageId = program.getLanguage().getLanguageID().toString();
+            String architecture = normalizeArchitecture(languageId);
+            if (architecture != null && !architecture.isBlank()) {
+                metadata.put("architecture", architecture);
+            }
+            String endianness = normalizeEndianness(languageId);
+            if (endianness != null && !endianness.isBlank()) {
+                metadata.put("endianness", endianness);
+            }
+        } catch (Exception ignored) {
+        }
+
+        String executableFormat = null;
+        try {
+            executableFormat = program.getExecutableFormat();
+        } catch (Exception ignored) {
+        }
+        String fileFormat = normalizeFileFormat(executableFormat);
+        String platform = normalizePlatform(executableFormat, fileFormat);
+        if (platform != null) {
+            metadata.put("platform", platform);
+        }
+        if (fileFormat != null) {
+            metadata.put("file_format", fileFormat);
+        }
+
+        try {
+            Address imageBase = program.getImageBase();
+            if (imageBase != null) {
+                metadata.put("image_base", imageBase.getOffset());
+            }
+        } catch (Exception ignored) {
+        }
+
+        return metadata;
+    }
+
+    private String extractExecutablePath(Program program) {
+        String path = invokeStringNoArg(program, "getExecutablePath");
+        if (path != null && !path.isBlank()) {
+            return path;
+        }
+
+        path = invokeStringNoArg(program, "getExecutableFilePath");
+        if (path != null && !path.isBlank()) {
+            return path;
+        }
+
+        Object domainFile = invokeNoArg(program, "getDomainFile");
+        if (domainFile != null) {
+            Object metadataObj = invokeNoArg(domainFile, "getMetadata");
+            if (metadataObj instanceof Map<?, ?>) {
+                Map<?, ?> metadata = (Map<?, ?>) metadataObj;
+                String[] keys = {
+                        "Executable Location",
+                        "Executable Path",
+                        "Import Path",
+                        "Original Path",
+                        "Original File",
+                        "Program Source"
+                };
+                for (String key : keys) {
+                    Object value = metadata.get(key);
+                    if (value != null) {
+                        String candidate = value.toString().trim();
+                        if (!candidate.isEmpty()) {
+                            return candidate;
+                        }
+                    }
+                }
+            }
+        }
+
+        return null;
+    }
+
+    private Object invokeNoArg(Object target, String methodName) {
+        if (target == null) {
+            return null;
+        }
+        try {
+            Method method = target.getClass().getMethod(methodName);
+            return method.invoke(target);
+        } catch (Exception ignored) {
+            return null;
+        }
+    }
+
+    private String invokeStringNoArg(Object target, String methodName) {
+        Object value = invokeNoArg(target, methodName);
+        if (value == null) {
+            return null;
+        }
+        String text = value.toString().trim();
+        return text.isEmpty() ? null : text;
+    }
+
+    private String stripPath(String value) {
+        if (value == null || value.isBlank()) {
+            return null;
+        }
+        int slash = Math.max(value.lastIndexOf('/'), value.lastIndexOf('\\'));
+        return slash >= 0 ? value.substring(slash + 1) : value;
+    }
+
+    private String normalizeArchitecture(String languageId) {
+        if (languageId == null || languageId.isBlank()) {
+            return null;
+        }
+        String lower = languageId.toLowerCase();
+        String[] parts = lower.split(":");
+        String arch = parts.length > 0 ? parts[0] : lower;
+        int bitness = inferBitness(lower);
+
+        switch (arch) {
+            case "x86":
+            case "i386":
+            case "i486":
+            case "i586":
+            case "i686":
+                return bitness >= 64 ? "x86_64" : "x86";
+            case "aarch64":
+            case "arm64":
+                return "arm64";
+            case "arm":
+            case "thumb":
+                return bitness >= 64 ? "arm64" : "arm";
+            case "mips64":
+            case "mips64el":
+            case "mips64eb":
+                return "mips64";
+            case "mips":
+            case "mips32":
+            case "mipsel":
+            case "mipseb":
+                return "mips";
+            case "powerpc64":
+            case "ppc64":
+            case "ppc64le":
+                return "ppc64";
+            case "powerpc":
+            case "ppc":
+                return "ppc";
+            case "riscv64":
+                return "riscv64";
+            case "riscv":
+            case "riscv32":
+                return "riscv";
+            case "sparc64":
+                return "sparc64";
+            case "sparc":
+                return "sparc";
+            default:
+                return null;
+        }
+    }
+
+    private String normalizeEndianness(String languageId) {
+        if (languageId == null || languageId.isBlank()) {
+            return null;
+        }
+        String lower = languageId.toLowerCase();
+        if (lower.contains(":le:")) {
+            return "little";
+        }
+        if (lower.contains(":be:")) {
+            return "big";
+        }
+        return null;
+    }
+
+    private int inferBitness(String value) {
+        if (value == null || value.isBlank()) {
+            return 0;
+        }
+        if (value.contains("64")) {
+            return 64;
+        }
+        if (value.contains("32")) {
+            return 32;
+        }
+        return 0;
+    }
+
+    private String normalizePlatform(String executableFormat, String fileFormat) {
+        String lower = executableFormat != null ? executableFormat.toLowerCase() : "";
+        if (lower.contains("elf")) {
+            return "linux";
+        }
+        if (lower.contains("portable executable") || lower.contains("windows")) {
+            return "windows";
+        }
+        if (lower.contains("mach-o") || lower.contains("darwin") || lower.contains("mac")) {
+            return "macos";
+        }
+        if (lower.contains("ios") || lower.contains("iphone") || lower.contains("tvos") || lower.contains("watchos")) {
+            return "ios";
+        }
+        if (lower.contains("android")) {
+            return "android";
+        }
+        if (lower.contains("freebsd")) {
+            return "freebsd";
+        }
+        if (lower.contains("netbsd")) {
+            return "netbsd";
+        }
+        if (lower.contains("openbsd")) {
+            return "openbsd";
+        }
+        if (lower.contains("solaris")) {
+            return "solaris";
+        }
+        if (lower.contains("uefi") || lower.contains("efi")) {
+            return "uefi";
+        }
+        if (lower.contains("raw") || lower.contains("firmware") || lower.contains("bare")) {
+            return "raw";
+        }
+        if ("bin".equals(fileFormat)) {
+            return "raw";
+        }
+        if ("pe".equals(fileFormat) || "pe32".equals(fileFormat) || "pe64".equals(fileFormat) || "coff".equals(fileFormat)) {
+            return "windows";
+        }
+        if ("elf".equals(fileFormat)) {
+            return "linux";
+        }
+        if ("macho".equals(fileFormat) || "macho32".equals(fileFormat) || "macho64".equals(fileFormat)) {
+            return "macos";
+        }
+        return null;
+    }
+
+    private String normalizeFileFormat(String executableFormat) {
+        if (executableFormat == null) {
+            return null;
+        }
+        String lower = executableFormat.toLowerCase();
+        if (lower.contains("elf")) {
+            return "elf";
+        }
+        if (lower.contains("portable executable") || lower.equals("pe")) {
+            return "pe";
+        }
+        if (lower.contains("mach-o")) {
+            return "macho";
+        }
+        if (lower.contains("coff")) {
+            return "coff";
+        }
+        if (lower.contains("raw")) {
+            return "bin";
+        }
+        return null;
     }
 
     private String buildLocalSummary(String sha256) {

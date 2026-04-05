@@ -1,6 +1,7 @@
 package ghidrassist.ui.tabs;
 
 import ghidrassist.core.TabController;
+import ghidra.framework.preferences.Preferences;
 import ghidrassist.services.symgraph.SymGraphModels.BinaryRevision;
 import ghidrassist.services.symgraph.SymGraphModels.ConflictAction;
 import ghidrassist.services.symgraph.SymGraphModels.ConflictEntry;
@@ -13,11 +14,12 @@ import javax.swing.table.DefaultTableModel;
 import java.awt.*;
 import java.net.URI;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
 /**
- * SymGraph tab with Status / Fetch / Push subtabs.
+ * SymGraph tab with overview, import, and publish workflows.
  */
 public class SymGraphTab extends JPanel {
     private static final long serialVersionUID = 1L;
@@ -32,10 +34,12 @@ public class SymGraphTab extends JPanel {
     private JLabel sha256Label;
     private JLabel localSummaryLabel;
 
-    // Status tab
+    // Overview
+    private JCheckBox autoRefreshCheckBox;
     private JButton queryButton;
     private JButton openBinaryButton;
     private JLabel statusLabel;
+    private JLabel statusBadgeLabel;
     private JPanel statsPanel;
     private JLabel symbolsStatLabel;
     private JLabel functionsStatLabel;
@@ -45,6 +49,7 @@ public class SymGraphTab extends JPanel {
     private JLabel latestRevisionLabel;
     private JLabel accessibleVersionsLabel;
     private String openBinaryUrl;
+    private JTabbedPane workflowTabs;
 
     // Fetch tab
     private JComboBox<String> fetchVersionCombo;
@@ -58,6 +63,8 @@ public class SymGraphTab extends JPanel {
     private JLabel confidenceValueLabel;
     private JButton pullPreviewButton;
     private JButton fetchResetButton;
+    private JToggleButton fetchAdvancedToggle;
+    private JPanel fetchAdvancedPanel;
     private JLabel summaryNewCountLabel;
     private JLabel summaryConflictCountLabel;
     private JLabel summarySameCountLabel;
@@ -66,10 +73,14 @@ public class SymGraphTab extends JPanel {
     private JLabel summaryGraphNodesLabel;
     private JLabel summaryGraphEdgesLabel;
     private JLabel summaryGraphVersionLabel;
+    private JCheckBox filterNewCheck;
+    private JCheckBox filterConflictsCheck;
+    private JCheckBox filterSameCheck;
     private JTable conflictTable;
     private DefaultTableModel conflictTableModel;
     private JTable fetchDocumentsTable;
     private DefaultTableModel fetchDocumentsTableModel;
+    private JLabel fetchGraphSummaryLabel;
     private JButton selectAllButton;
     private JButton deselectAllButton;
     private JButton selectNewButton;
@@ -92,6 +103,9 @@ public class SymGraphTab extends JPanel {
     private JCheckBox pushGraphCheck;
     private JTextField pushNameFilterField;
     private JButton pushPreviewButton;
+    private JButton pushResetButton;
+    private JToggleButton pushAdvancedToggle;
+    private JPanel pushAdvancedPanel;
     private JButton pushButton;
     private JLabel pushMatchingCountLabel;
     private JLabel pushSelectedCountLabel;
@@ -102,6 +116,7 @@ public class SymGraphTab extends JPanel {
     private DefaultTableModel pushPreviewTableModel;
     private JTable pushDocumentsTable;
     private DefaultTableModel pushDocumentsTableModel;
+    private JLabel pushGraphSummaryLabel;
     private JButton pushSelectAllButton;
     private JButton pushDeselectAllButton;
     private JButton pushInvertSelectionButton;
@@ -111,7 +126,9 @@ public class SymGraphTab extends JPanel {
     private Runnable pushCancelCallback;
 
     // State
+    private final List<ConflictEntry> allConflicts = new ArrayList<>();
     private final List<ConflictEntry> displayedConflicts = new ArrayList<>();
+    private final Map<String, Boolean> conflictSelectionState = new HashMap<>();
     private final List<DocumentSummary> displayedFetchDocuments = new ArrayList<>();
     private final List<Map<String, Object>> pushPreviewSymbols = new ArrayList<>();
     private final List<Map<String, Object>> pushPreviewDocuments = new ArrayList<>();
@@ -139,11 +156,18 @@ public class SymGraphTab extends JPanel {
         localSummaryLabel = new JLabel("No binary loaded");
         localSummaryLabel.setForeground(Color.GRAY);
 
-        queryButton = new JButton("Query SymGraph");
+        autoRefreshCheckBox = new JCheckBox("Auto-refresh");
+        autoRefreshCheckBox.setSelected(Boolean.parseBoolean(
+                Preferences.getProperty("GhidrAssist.SymGraphAutoRefresh", "false")));
+        queryButton = new JButton("Refresh");
         openBinaryButton = new JButton("Open in SymGraph");
         openBinaryButton.setEnabled(false);
         statusLabel = new JLabel("Not checked");
         statusLabel.setForeground(Color.GRAY);
+        statusBadgeLabel = new JLabel("Not checked");
+        statusBadgeLabel.setOpaque(true);
+        statusBadgeLabel.setBorder(BorderFactory.createEmptyBorder(2, 8, 2, 8));
+        statusBadgeLabel.setBackground(UIManager.getColor("Panel.background"));
         symbolsStatLabel = new JLabel("Symbols: -");
         functionsStatLabel = new JLabel("Functions: -");
         nodesStatLabel = new JLabel("Graph Nodes: -");
@@ -189,8 +213,10 @@ public class SymGraphTab extends JPanel {
         pullGraphCheck = new JCheckBox("Include Graph Data", true);
         confidenceSlider = new JSlider(JSlider.HORIZONTAL, 0, 100, 0);
         confidenceValueLabel = new JLabel("0.0");
-        pullPreviewButton = new JButton("Preview Fetch");
+        pullPreviewButton = new JButton("Preview Import");
         fetchResetButton = new JButton("Reset");
+        fetchAdvancedToggle = createDisclosureToggle("Advanced Filters");
+        fetchAdvancedPanel = new JPanel(new GridBagLayout());
         summaryNewCountLabel = new JLabel("New: 0");
         summaryConflictCountLabel = new JLabel("Conflicts: 0");
         summarySameCountLabel = new JLabel("Same: 0");
@@ -199,6 +225,9 @@ public class SymGraphTab extends JPanel {
         summaryGraphNodesLabel = new JLabel("Graph Nodes: 0");
         summaryGraphEdgesLabel = new JLabel("Graph Edges: 0");
         summaryGraphVersionLabel = new JLabel("Version: -");
+        filterNewCheck = new JCheckBox("New", true);
+        filterConflictsCheck = new JCheckBox("Conflicts", true);
+        filterSameCheck = new JCheckBox("Unchanged", false);
         fetchProgressBar = new JProgressBar(0, 100);
         fetchProgressBar.setVisible(false);
         fetchProgressLabel = new JLabel("");
@@ -208,7 +237,7 @@ public class SymGraphTab extends JPanel {
         pullStatusLabel.setForeground(Color.GRAY);
 
         conflictTableModel = new DefaultTableModel(
-                new Object[]{"Select", "Address", "Type/Storage", "Local Name", "Remote Name", "Action"}, 0) {
+                new Object[]{"Select", "Address", "Type/Storage", "Local Name", "Remote Name", "Status"}, 0) {
             private static final long serialVersionUID = 1L;
             @Override
             public Class<?> getColumnClass(int columnIndex) {
@@ -233,12 +262,13 @@ public class SymGraphTab extends JPanel {
             }
         };
         fetchDocumentsTable = new JTable(fetchDocumentsTableModel);
+        fetchGraphSummaryLabel = new JLabel("No graph data loaded.");
         selectAllButton = new JButton("Select All");
         deselectAllButton = new JButton("Deselect All");
         selectNewButton = new JButton("Select New");
         selectConflictsButton = new JButton("Select Conflicts");
         invertSelectionButton = new JButton("Invert");
-        applyAllNewButton = new JButton("Apply All New");
+        applyAllNewButton = new JButton("Apply Recommended");
         applyButton = new JButton("Apply Selected");
 
         fullBinaryRadio = new JRadioButton("Full Binary");
@@ -253,13 +283,17 @@ public class SymGraphTab extends JPanel {
         pushCommentsCheck = new JCheckBox("Comments", false);
         pushGraphCheck = new JCheckBox("Include Graph Data", true);
         pushNameFilterField = new JTextField(18);
-        pushPreviewButton = new JButton("Preview Push");
-        pushButton = new JButton("Push Selected");
+        pushPreviewButton = new JButton("Preview Publish");
+        pushResetButton = new JButton("Reset");
+        pushAdvancedToggle = createDisclosureToggle("Advanced Filters");
+        pushAdvancedPanel = new JPanel(new GridBagLayout());
+        pushButton = new JButton("Publish Selected");
         pushMatchingCountLabel = new JLabel("Matching: 0");
         pushSelectedCountLabel = new JLabel("Selected: 0 symbols / 0 docs");
         pushDocumentsCountLabel = new JLabel("Documents: 0");
         pushGraphNodesLabel = new JLabel("Graph Nodes: 0");
         pushGraphEdgesLabel = new JLabel("Graph Edges: 0");
+        pushGraphSummaryLabel = new JLabel("No graph data included in this publish preview.");
         pushProgressBar = new JProgressBar(0, 100);
         pushProgressBar.setVisible(false);
         pushProgressLabel = new JLabel("");
@@ -306,21 +340,27 @@ public class SymGraphTab extends JPanel {
     private void layoutComponents() {
         JPanel mainPanel = new JPanel(new BorderLayout(5, 5));
         mainPanel.setBorder(BorderFactory.createEmptyBorder(5, 5, 5, 5));
-        mainPanel.add(createBinaryInfoPanel(), BorderLayout.NORTH);
+        mainPanel.add(createOverviewPanel(), BorderLayout.NORTH);
 
-        JTabbedPane subTabs = new JTabbedPane();
-        subTabs.addTab("Status", createStatusTab());
-        subTabs.addTab("Fetch", createFetchTab());
-        subTabs.addTab("Push", createPushTab());
-        mainPanel.add(subTabs, BorderLayout.CENTER);
+        workflowTabs = new JTabbedPane();
+        workflowTabs.addTab("Import From SymGraph", createFetchTab());
+        workflowTabs.addTab("Publish To SymGraph", createPushTab());
+        mainPanel.add(workflowTabs, BorderLayout.CENTER);
 
         add(mainPanel, BorderLayout.CENTER);
     }
 
-    private JPanel createBinaryInfoPanel() {
+    private JPanel createOverviewPanel() {
         JPanel panel = new JPanel(new GridBagLayout());
-        panel.setBorder(BorderFactory.createCompoundBorder(
-                BorderFactory.createTitledBorder("Binary Information"),
+        GridBagConstraints panelGbc = new GridBagConstraints();
+        panelGbc.gridx = 0;
+        panelGbc.weightx = 1.0;
+        panelGbc.fill = GridBagConstraints.HORIZONTAL;
+        panelGbc.anchor = GridBagConstraints.NORTHWEST;
+
+        JPanel binaryPanel = new JPanel(new GridBagLayout());
+        binaryPanel.setBorder(BorderFactory.createCompoundBorder(
+                BorderFactory.createTitledBorder("Local Status"),
                 BorderFactory.createEmptyBorder(5, 5, 5, 5)));
 
         GridBagConstraints gbc = new GridBagConstraints();
@@ -329,62 +369,61 @@ public class SymGraphTab extends JPanel {
 
         gbc.gridx = 0;
         gbc.gridy = 0;
-        panel.add(new JLabel("Binary:"), gbc);
+        binaryPanel.add(new JLabel("Binary:"), gbc);
         gbc.gridx = 1;
         gbc.weightx = 1.0;
         gbc.fill = GridBagConstraints.HORIZONTAL;
-        panel.add(binaryNameLabel, gbc);
+        binaryPanel.add(binaryNameLabel, gbc);
 
         gbc.gridx = 0;
         gbc.gridy = 1;
         gbc.weightx = 0;
         gbc.fill = GridBagConstraints.NONE;
-        panel.add(new JLabel("SHA256:"), gbc);
+        binaryPanel.add(new JLabel("SHA256:"), gbc);
         gbc.gridx = 1;
         gbc.weightx = 1.0;
         gbc.fill = GridBagConstraints.HORIZONTAL;
-        panel.add(sha256Label, gbc);
+        binaryPanel.add(sha256Label, gbc);
 
         gbc.gridx = 0;
         gbc.gridy = 2;
         gbc.weightx = 0;
         gbc.fill = GridBagConstraints.NONE;
-        panel.add(new JLabel("Local Summary:"), gbc);
+        binaryPanel.add(new JLabel("Local Summary:"), gbc);
         gbc.gridx = 1;
         gbc.weightx = 1.0;
         gbc.fill = GridBagConstraints.HORIZONTAL;
-        panel.add(localSummaryLabel, gbc);
-        return panel;
-    }
-
-    private JPanel createStatusTab() {
-        JPanel panel = new JPanel(new BorderLayout(5, 5));
-        JPanel container = new JPanel();
-        container.setLayout(new BoxLayout(container, BoxLayout.Y_AXIS));
+        binaryPanel.add(localSummaryLabel, gbc);
 
         JPanel statusCard = new JPanel();
         statusCard.setLayout(new BoxLayout(statusCard, BoxLayout.Y_AXIS));
         statusCard.setBorder(BorderFactory.createCompoundBorder(
-                BorderFactory.createTitledBorder("SymGraph Server"),
+                BorderFactory.createTitledBorder("Remote Status"),
                 BorderFactory.createEmptyBorder(5, 5, 5, 5)));
 
-        JPanel buttonRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 5, 0));
+        JPanel buttonRow = new JPanel(new FlowLayout(FlowLayout.RIGHT, 5, 0));
         buttonRow.setAlignmentX(Component.LEFT_ALIGNMENT);
+        buttonRow.add(autoRefreshCheckBox);
         buttonRow.add(queryButton);
         buttonRow.add(openBinaryButton);
         statusCard.add(buttonRow);
 
         JPanel statusRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 5, 0));
         statusRow.setAlignmentX(Component.LEFT_ALIGNMENT);
-        statusRow.add(new JLabel("Status:"));
+        statusRow.add(statusBadgeLabel);
         statusRow.add(statusLabel);
         statusCard.add(statusRow);
 
         statsPanel.setAlignmentX(Component.LEFT_ALIGNMENT);
         statusCard.add(statsPanel);
-        container.add(statusCard);
 
-        panel.add(container, BorderLayout.NORTH);
+        panelGbc.gridy = 0;
+        panel.add(binaryPanel, panelGbc);
+
+        panelGbc.gridy = 1;
+        panelGbc.insets = new Insets(5, 0, 0, 0);
+        panel.add(statusCard, panelGbc);
+
         return panel;
     }
 
@@ -394,18 +433,18 @@ public class SymGraphTab extends JPanel {
         JPanel config = new JPanel();
         config.setLayout(new BoxLayout(config, BoxLayout.Y_AXIS));
         config.setBorder(BorderFactory.createCompoundBorder(
-                BorderFactory.createTitledBorder("Fetch Configuration"),
+                BorderFactory.createTitledBorder("Import Configuration"),
                 BorderFactory.createEmptyBorder(5, 5, 5, 5)));
 
         JPanel row1 = new JPanel(new FlowLayout(FlowLayout.LEFT, 5, 0));
-        row1.add(new JLabel("Version:"));
+        row1.add(new JLabel("Source Revision:"));
         row1.add(fetchVersionCombo);
-        row1.add(new JLabel("Name Filter:"));
-        row1.add(fetchNameFilterField);
+        row1.add(Box.createHorizontalStrut(12));
+        row1.add(fetchAdvancedToggle);
         config.add(row1);
 
         JPanel row2 = new JPanel(new FlowLayout(FlowLayout.LEFT, 5, 0));
-        row2.add(new JLabel("Symbol Types:"));
+        row2.add(new JLabel("Include:"));
         row2.add(pullFunctionsCheck);
         row2.add(pullVariablesCheck);
         row2.add(pullTypesCheck);
@@ -413,20 +452,14 @@ public class SymGraphTab extends JPanel {
         row2.add(pullGraphCheck);
         config.add(row2);
 
+        configureFetchAdvancedPanel();
+        fetchAdvancedPanel.setVisible(false);
+        config.add(fetchAdvancedPanel);
+
         JPanel row3 = new JPanel(new FlowLayout(FlowLayout.LEFT, 5, 0));
-        row3.add(new JLabel("Min Confidence:"));
-        row3.add(confidenceSlider);
-        row3.add(confidenceValueLabel);
+        row3.add(pullPreviewButton);
+        row3.add(fetchResetButton);
         config.add(row3);
-
-        JPanel row4 = new JPanel(new FlowLayout(FlowLayout.LEFT, 5, 0));
-        row4.add(createMergePolicyPanel());
-        config.add(row4);
-
-        JPanel row5 = new JPanel(new FlowLayout(FlowLayout.LEFT, 5, 0));
-        row5.add(pullPreviewButton);
-        row5.add(fetchResetButton);
-        config.add(row5);
         panel.add(config, BorderLayout.NORTH);
 
         JPanel center = new JPanel(new BorderLayout(5, 5));
@@ -445,21 +478,19 @@ public class SymGraphTab extends JPanel {
         configureTable(conflictTable, 6, 110, 130, 90);
         configureDocumentTable(fetchDocumentsTable, false);
 
-        JPanel symbolsPanel = new JPanel(new BorderLayout(5, 5));
-        symbolsPanel.setBorder(BorderFactory.createTitledBorder("Symbols"));
+        JTabbedPane fetchPreviewTabs = new JTabbedPane();
+
+        JPanel changesPanel = new JPanel(new BorderLayout(5, 5));
+        JPanel filterRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 5, 0));
+        filterRow.add(new JLabel("Show:"));
+        filterRow.add(filterNewCheck);
+        filterRow.add(filterConflictsCheck);
+        filterRow.add(filterSameCheck);
+        changesPanel.add(filterRow, BorderLayout.NORTH);
+
         JScrollPane symbolsScroll = new JScrollPane(conflictTable);
         symbolsScroll.setPreferredSize(new Dimension(0, 280));
-        symbolsPanel.add(symbolsScroll, BorderLayout.CENTER);
-
-        JPanel documentsPanel = new JPanel(new BorderLayout(5, 5));
-        documentsPanel.setBorder(BorderFactory.createTitledBorder("Documents"));
-        JScrollPane documentsScroll = new JScrollPane(fetchDocumentsTable);
-        documentsScroll.setPreferredSize(new Dimension(0, 140));
-        documentsPanel.add(documentsScroll, BorderLayout.CENTER);
-
-        JSplitPane splitPane = new JSplitPane(JSplitPane.VERTICAL_SPLIT, symbolsPanel, documentsPanel);
-        splitPane.setResizeWeight(0.67);
-        center.add(splitPane, BorderLayout.CENTER);
+        changesPanel.add(symbolsScroll, BorderLayout.CENTER);
 
         JPanel selectionRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 5, 0));
         selectionRow.add(selectAllButton);
@@ -468,14 +499,30 @@ public class SymGraphTab extends JPanel {
         selectionRow.add(selectConflictsButton);
         selectionRow.add(invertSelectionButton);
 
-        JPanel actionRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 5, 0));
+        JPanel actionRow = new JPanel(new FlowLayout(FlowLayout.RIGHT, 5, 0));
         actionRow.add(applyAllNewButton);
         actionRow.add(applyButton);
 
+        JPanel footerRow = new JPanel(new BorderLayout(5, 0));
+        footerRow.add(selectionRow, BorderLayout.WEST);
+        footerRow.add(actionRow, BorderLayout.EAST);
+        changesPanel.add(footerRow, BorderLayout.SOUTH);
+        fetchPreviewTabs.addTab("Changes", changesPanel);
+
+        JPanel documentsPanel = new JPanel(new BorderLayout(5, 5));
+        JScrollPane documentsScroll = new JScrollPane(fetchDocumentsTable);
+        documentsPanel.add(documentsScroll, BorderLayout.CENTER);
+        fetchPreviewTabs.addTab("Documents", documentsPanel);
+
+        JPanel graphPanel = new JPanel(new BorderLayout(5, 5));
+        fetchGraphSummaryLabel.setVerticalAlignment(SwingConstants.TOP);
+        graphPanel.add(fetchGraphSummaryLabel, BorderLayout.NORTH);
+        fetchPreviewTabs.addTab("Graph", graphPanel);
+
+        center.add(fetchPreviewTabs, BorderLayout.CENTER);
+
         JPanel bottom = new JPanel();
         bottom.setLayout(new BoxLayout(bottom, BoxLayout.Y_AXIS));
-        bottom.add(selectionRow);
-        bottom.add(actionRow);
         bottom.add(fetchProgressBar);
         bottom.add(fetchProgressLabel);
         bottom.add(pullStatusLabel);
@@ -491,7 +538,7 @@ public class SymGraphTab extends JPanel {
         JPanel config = new JPanel();
         config.setLayout(new BoxLayout(config, BoxLayout.Y_AXIS));
         config.setBorder(BorderFactory.createCompoundBorder(
-                BorderFactory.createTitledBorder("Push Configuration"),
+                BorderFactory.createTitledBorder("Publish Configuration"),
                 BorderFactory.createEmptyBorder(5, 5, 5, 5)));
 
         JPanel row1 = new JPanel(new FlowLayout(FlowLayout.LEFT, 5, 0));
@@ -500,10 +547,12 @@ public class SymGraphTab extends JPanel {
         row1.add(currentFunctionRadio);
         row1.add(new JLabel("Visibility:"));
         row1.add(pushVisibilityCombo);
+        row1.add(Box.createHorizontalStrut(12));
+        row1.add(pushAdvancedToggle);
         config.add(row1);
 
         JPanel row2 = new JPanel(new FlowLayout(FlowLayout.LEFT, 5, 0));
-        row2.add(new JLabel("Symbol Types:"));
+        row2.add(new JLabel("Include:"));
         row2.add(pushFunctionsCheck);
         row2.add(pushVariablesCheck);
         row2.add(pushTypesCheck);
@@ -511,15 +560,14 @@ public class SymGraphTab extends JPanel {
         row2.add(pushGraphCheck);
         config.add(row2);
 
-        JPanel row3 = new JPanel(new FlowLayout(FlowLayout.LEFT, 5, 0));
-        row3.add(new JLabel("Name Filter:"));
-        row3.add(pushNameFilterField);
-        config.add(row3);
+        configurePushAdvancedPanel();
+        pushAdvancedPanel.setVisible(false);
+        config.add(pushAdvancedPanel);
 
-        JPanel row4 = new JPanel(new FlowLayout(FlowLayout.LEFT, 5, 0));
-        row4.add(pushPreviewButton);
-        row4.add(pushButton);
-        config.add(row4);
+        JPanel row3 = new JPanel(new FlowLayout(FlowLayout.LEFT, 5, 0));
+        row3.add(pushPreviewButton);
+        row3.add(pushResetButton);
+        config.add(row3);
         panel.add(config, BorderLayout.NORTH);
 
         JPanel center = new JPanel(new BorderLayout(5, 5));
@@ -535,30 +583,41 @@ public class SymGraphTab extends JPanel {
         configureTable(pushPreviewTable, 6, 110, 100, 90);
         configureDocumentTable(pushDocumentsTable, true);
 
+        JTabbedPane pushPreviewTabs = new JTabbedPane();
+
         JPanel symbolsPanel = new JPanel(new BorderLayout(5, 5));
-        symbolsPanel.setBorder(BorderFactory.createTitledBorder("Symbols"));
         JScrollPane symbolsScroll = new JScrollPane(pushPreviewTable);
         symbolsScroll.setPreferredSize(new Dimension(0, 280));
         symbolsPanel.add(symbolsScroll, BorderLayout.CENTER);
-
-        JPanel documentsPanel = new JPanel(new BorderLayout(5, 5));
-        documentsPanel.setBorder(BorderFactory.createTitledBorder("Documents"));
-        JScrollPane documentsScroll = new JScrollPane(pushDocumentsTable);
-        documentsScroll.setPreferredSize(new Dimension(0, 140));
-        documentsPanel.add(documentsScroll, BorderLayout.CENTER);
-
-        JSplitPane splitPane = new JSplitPane(JSplitPane.VERTICAL_SPLIT, symbolsPanel, documentsPanel);
-        splitPane.setResizeWeight(0.67);
-        center.add(splitPane, BorderLayout.CENTER);
 
         JPanel selectionRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 5, 0));
         selectionRow.add(pushSelectAllButton);
         selectionRow.add(pushDeselectAllButton);
         selectionRow.add(pushInvertSelectionButton);
 
+        JPanel actionRow = new JPanel(new FlowLayout(FlowLayout.RIGHT, 5, 0));
+        actionRow.add(pushButton);
+
+        JPanel footerRow = new JPanel(new BorderLayout(5, 0));
+        footerRow.add(selectionRow, BorderLayout.WEST);
+        footerRow.add(actionRow, BorderLayout.EAST);
+        symbolsPanel.add(footerRow, BorderLayout.SOUTH);
+        pushPreviewTabs.addTab("Symbols", symbolsPanel);
+
+        JPanel documentsPanel = new JPanel(new BorderLayout(5, 5));
+        JScrollPane documentsScroll = new JScrollPane(pushDocumentsTable);
+        documentsPanel.add(documentsScroll, BorderLayout.CENTER);
+        pushPreviewTabs.addTab("Documents", documentsPanel);
+
+        JPanel graphPanel = new JPanel(new BorderLayout(5, 5));
+        pushGraphSummaryLabel.setVerticalAlignment(SwingConstants.TOP);
+        graphPanel.add(pushGraphSummaryLabel, BorderLayout.NORTH);
+        pushPreviewTabs.addTab("Graph", graphPanel);
+
+        center.add(pushPreviewTabs, BorderLayout.CENTER);
+
         JPanel bottom = new JPanel();
         bottom.setLayout(new BoxLayout(bottom, BoxLayout.Y_AXIS));
-        bottom.add(selectionRow);
         bottom.add(pushProgressBar);
         bottom.add(pushProgressLabel);
         bottom.add(pushStatusLabel);
@@ -598,9 +657,54 @@ public class SymGraphTab extends JPanel {
         }
     }
 
+    private void configureFetchAdvancedPanel() {
+        GridBagConstraints gbc = new GridBagConstraints();
+        gbc.anchor = GridBagConstraints.WEST;
+        gbc.insets = new Insets(2, 0, 2, 12);
+
+        gbc.gridx = 0;
+        gbc.gridy = 0;
+        fetchAdvancedPanel.add(new JLabel("Name Filter:"), gbc);
+        gbc.gridx = 1;
+        fetchAdvancedPanel.add(fetchNameFilterField, gbc);
+
+        gbc.gridx = 0;
+        gbc.gridy = 1;
+        fetchAdvancedPanel.add(new JLabel("Min Confidence:"), gbc);
+        gbc.gridx = 1;
+        fetchAdvancedPanel.add(confidenceSlider, gbc);
+        gbc.gridx = 2;
+        gbc.insets = new Insets(2, 0, 2, 0);
+        fetchAdvancedPanel.add(confidenceValueLabel, gbc);
+
+        gbc.gridx = 0;
+        gbc.gridy = 2;
+        gbc.insets = new Insets(2, 0, 2, 12);
+        fetchAdvancedPanel.add(new JLabel("Graph Merge:"), gbc);
+        gbc.gridx = 1;
+        gbc.gridwidth = 2;
+        fetchAdvancedPanel.add(createMergePolicyPanel(), gbc);
+    }
+
+    private void configurePushAdvancedPanel() {
+        GridBagConstraints gbc = new GridBagConstraints();
+        gbc.anchor = GridBagConstraints.WEST;
+        gbc.insets = new Insets(2, 0, 2, 12);
+        gbc.gridx = 0;
+        gbc.gridy = 0;
+        pushAdvancedPanel.add(new JLabel("Name Filter:"), gbc);
+        gbc.gridx = 1;
+        pushAdvancedPanel.add(pushNameFilterField, gbc);
+    }
+
+    private JToggleButton createDisclosureToggle(String label) {
+        JToggleButton toggle = new JToggleButton(label);
+        toggle.setFocusable(false);
+        return toggle;
+    }
+
     private JPanel createMergePolicyPanel() {
         JPanel panel = new JPanel(new FlowLayout(FlowLayout.LEFT, 5, 0));
-        panel.add(new JLabel("Graph Merge:"));
         ButtonGroup group = new ButtonGroup();
         JRadioButton upsert = new JRadioButton("Upsert", true);
         upsert.setActionCommand(MERGE_POLICY_UPSERT);
@@ -621,6 +725,12 @@ public class SymGraphTab extends JPanel {
     }
 
     private void setupListeners() {
+        autoRefreshCheckBox.addActionListener(e -> {
+            Preferences.setProperty(
+                    "GhidrAssist.SymGraphAutoRefresh",
+                    Boolean.toString(autoRefreshCheckBox.isSelected()));
+            Preferences.store();
+        });
         queryButton.addActionListener(e -> controller.handleSymGraphQuery());
         openBinaryButton.addActionListener(e -> {
             if (openBinaryUrl != null && Desktop.isDesktopSupported()) {
@@ -632,6 +742,11 @@ public class SymGraphTab extends JPanel {
         });
         pullPreviewButton.addActionListener(e -> controller.handleSymGraphPullPreview());
         fetchResetButton.addActionListener(e -> clearConflicts());
+        fetchAdvancedToggle.addActionListener(e -> {
+            fetchAdvancedPanel.setVisible(fetchAdvancedToggle.isSelected());
+            fetchAdvancedPanel.revalidate();
+            fetchAdvancedPanel.repaint();
+        });
         selectAllButton.addActionListener(e -> {
             setAllSelected(conflictTableModel, true);
             setAllSelected(fetchDocumentsTableModel, true);
@@ -649,6 +764,12 @@ public class SymGraphTab extends JPanel {
         applyAllNewButton.addActionListener(e -> controller.handleSymGraphApplyAllNew());
         applyButton.addActionListener(e -> controller.handleSymGraphApplySelected(getSelectedConflicts()));
         pushPreviewButton.addActionListener(e -> controller.handleSymGraphPushPreview());
+        pushResetButton.addActionListener(e -> clearPushPreview());
+        pushAdvancedToggle.addActionListener(e -> {
+            pushAdvancedPanel.setVisible(pushAdvancedToggle.isSelected());
+            pushAdvancedPanel.revalidate();
+            pushAdvancedPanel.repaint();
+        });
         pushButton.addActionListener(e -> controller.handleSymGraphExecutePush());
         pushSelectAllButton.addActionListener(e -> {
             setAllSelected(pushPreviewTableModel, true);
@@ -663,7 +784,21 @@ public class SymGraphTab extends JPanel {
             invertSelection(pushDocumentsTableModel);
         });
         confidenceSlider.addChangeListener(e -> confidenceValueLabel.setText(String.format("%.1f", confidenceSlider.getValue() / 100.0)));
-        conflictTableModel.addTableModelListener(e -> updateSelectedCounts());
+        filterNewCheck.addActionListener(e -> rebuildConflictTable());
+        filterConflictsCheck.addActionListener(e -> rebuildConflictTable());
+        filterSameCheck.addActionListener(e -> rebuildConflictTable());
+        conflictTableModel.addTableModelListener(e -> {
+            if (e.getColumn() == 0) {
+                int row = e.getFirstRow();
+                if (row >= 0 && row < displayedConflicts.size()) {
+                    boolean selected = Boolean.TRUE.equals(conflictTableModel.getValueAt(row, 0));
+                    ConflictEntry conflict = displayedConflicts.get(row);
+                    conflict.setSelected(selected);
+                    conflictSelectionState.put(conflictKey(conflict), selected);
+                }
+            }
+            updateSelectedCounts();
+        });
         fetchDocumentsTableModel.addTableModelListener(e -> updateSelectedCounts());
         pushPreviewTableModel.addTableModelListener(e -> updateSelectedCounts());
         pushDocumentsTableModel.addTableModelListener(e -> updateSelectedCounts());
@@ -692,6 +827,45 @@ public class SymGraphTab extends JPanel {
             }
         }
         updateSelectedCounts();
+    }
+
+    private void rebuildConflictTable() {
+        conflictTableModel.setRowCount(0);
+        displayedConflicts.clear();
+
+        for (ConflictEntry conflict : allConflicts) {
+            if (!shouldShowConflict(conflict)) {
+                continue;
+            }
+
+            boolean selected = conflictSelectionState.getOrDefault(conflictKey(conflict), conflict.isSelected());
+            conflict.setSelected(selected);
+            conflictTableModel.addRow(new Object[]{
+                    selected,
+                    conflict.getAddressHex(),
+                    formatStorageInfo(conflict),
+                    conflict.getLocalNameDisplay(),
+                    conflict.getRemoteNameDisplay(),
+                    conflict.getAction().getValue().toUpperCase()
+            });
+            displayedConflicts.add(conflict);
+        }
+
+        applyButton.setEnabled(!displayedConflicts.isEmpty() || !displayedFetchDocuments.isEmpty() || graphPreviewData != null);
+        updateSelectedCounts();
+    }
+
+    private boolean shouldShowConflict(ConflictEntry conflict) {
+        return switch (conflict.getAction()) {
+            case NEW -> filterNewCheck.isSelected();
+            case CONFLICT -> filterConflictsCheck.isSelected();
+            case SAME -> filterSameCheck.isSelected();
+        };
+    }
+
+    private String conflictKey(ConflictEntry conflict) {
+        return conflict.getAddressHex() + "|" + conflict.getAction().getValue() + "|" +
+                conflict.getLocalNameDisplay() + "|" + conflict.getRemoteNameDisplay();
     }
 
     private void updateSelectedCounts() {
@@ -745,21 +919,39 @@ public class SymGraphTab extends JPanel {
         statusLabel.setText(status);
         if (found) {
             statusLabel.setForeground(new Color(0, 128, 0));
+            statusBadgeLabel.setText("Found");
+            statusBadgeLabel.setBackground(new Color(31, 111, 61));
+            statusBadgeLabel.setForeground(Color.WHITE);
         } else if (status.toLowerCase().contains("error") || status.toLowerCase().contains("not found")) {
             statusLabel.setForeground(Color.RED);
+            statusBadgeLabel.setText(status.toLowerCase().contains("not found") ? "Not Found" : "Error");
+            statusBadgeLabel.setBackground(new Color(139, 46, 46));
+            statusBadgeLabel.setForeground(Color.WHITE);
         } else {
             statusLabel.setForeground(Color.GRAY);
+            statusBadgeLabel.setText(status.toLowerCase().contains("check") ? "Checking" : "Unknown");
+            statusBadgeLabel.setBackground(UIManager.getColor("Panel.background"));
+            statusBadgeLabel.setForeground(UIManager.getColor("Label.foreground"));
         }
     }
 
-    public void setStats(int symbols, int functions, int nodes, String lastUpdated) {
-        setStats(symbols, functions, nodes, lastUpdated, null, null, null);
+    public void resetQueryStatus() {
+        statusBadgeLabel.setText("Not checked");
+        statusBadgeLabel.setBackground(UIManager.getColor("Panel.background"));
+        statusBadgeLabel.setForeground(UIManager.getColor("Label.foreground"));
+        statusLabel.setForeground(Color.GRAY);
+        statusLabel.setText("Use Refresh to check whether this binary already exists in SymGraph.");
+    }
+
+    public void setStats(int symbols, int functions, int nodes, int edges, String lastUpdated) {
+        setStats(symbols, functions, nodes, edges, lastUpdated, null, null, null);
     }
 
     public void setStats(
             int symbols,
             int functions,
             int nodes,
+            int edges,
             String lastUpdated,
             List<BinaryRevision> revisions,
             Integer latestRevision,
@@ -767,7 +959,7 @@ public class SymGraphTab extends JPanel {
         symbolsStatLabel.setText(String.format("Symbols: %,d", symbols));
         functionsStatLabel.setText(String.format("Functions: %,d", functions));
         nodesStatLabel.setText(String.format("Graph Nodes: %,d", nodes));
-        edgesStatLabel.setText("Graph Edges: -");
+        edgesStatLabel.setText(String.format("Graph Edges: %,d", edges));
         updatedStatLabel.setText("Last Updated: " + (lastUpdated != null ? lastUpdated : "Unknown"));
         latestRevisionLabel.setText(latestRevision != null ? "Latest Version: v" + latestRevision : "Latest Version: -");
         accessibleVersionsLabel.setText(revisions != null ? "Accessible Versions: " + revisions.size() : "Accessible Versions: -");
@@ -799,6 +991,10 @@ public class SymGraphTab extends JPanel {
     public void setOpenBinaryUrl(String url) {
         this.openBinaryUrl = url;
         openBinaryButton.setEnabled(url != null && !url.isEmpty());
+    }
+
+    public boolean isAutoRefreshEnabled() {
+        return autoRefreshCheckBox.isSelected();
     }
 
     public void hideStats() {
@@ -869,8 +1065,9 @@ public class SymGraphTab extends JPanel {
     }
 
     public void populateConflicts(List<ConflictEntry> conflicts) {
-        conflictTableModel.setRowCount(0);
+        allConflicts.clear();
         displayedConflicts.clear();
+        conflictSelectionState.clear();
 
         int newCount = 0;
         int conflictCount = 0;
@@ -888,8 +1085,8 @@ public class SymGraphTab extends JPanel {
         summaryConflictCountLabel.setText("Conflicts: " + conflictCount);
         summarySameCountLabel.setText("Same: " + sameCount);
 
-        List<ConflictEntry> sorted = new ArrayList<>(conflicts);
-        sorted.sort((a, b) -> {
+        allConflicts.addAll(conflicts);
+        allConflicts.sort((a, b) -> {
             int aRank = a.getAction() == ConflictAction.NEW ? 0 : a.getAction() == ConflictAction.CONFLICT ? 1 : 2;
             int bRank = b.getAction() == ConflictAction.NEW ? 0 : b.getAction() == ConflictAction.CONFLICT ? 1 : 2;
             if (aRank != bRank) {
@@ -898,22 +1095,14 @@ public class SymGraphTab extends JPanel {
             return Long.compare(a.getAddress(), b.getAddress());
         });
 
-        for (ConflictEntry conflict : sorted) {
+        for (ConflictEntry conflict : allConflicts) {
             boolean selected = conflict.getAction() != ConflictAction.SAME;
             conflict.setSelected(selected);
-            conflictTableModel.addRow(new Object[]{
-                    selected,
-                    conflict.getAddressHex(),
-                    formatStorageInfo(conflict),
-                    conflict.getLocalNameDisplay(),
-                    conflict.getRemoteNameDisplay(),
-                    conflict.getAction().getValue().toUpperCase()
-            });
-            displayedConflicts.add(conflict);
+            conflictSelectionState.put(conflictKey(conflict), selected);
         }
 
         applyAllNewButton.setEnabled(newCount > 0 || graphPreviewData != null);
-        updateSelectedCounts();
+        rebuildConflictTable();
     }
 
     public void populateFetchDocuments(List<DocumentSummary> documents) {
@@ -964,7 +1153,21 @@ public class SymGraphTab extends JPanel {
         this.graphPreviewEdges = edges;
         summaryGraphNodesLabel.setText("Graph Nodes: " + nodes);
         summaryGraphEdgesLabel.setText("Graph Edges: " + edges);
-        summaryGraphVersionLabel.setText("Version: " + (fetchVersionCombo.getSelectedItem() != null ? fetchVersionCombo.getSelectedItem() : "-"));
+        summaryGraphVersionLabel.setText("Version: " + (fetchVersionCombo.getSelectedItem() != null ? fetchVersionCombo.getSelectedItem() : "Latest"));
+        if (export != null) {
+            StringBuilder summary = new StringBuilder();
+            summary.append("Graph preview ready from ")
+                    .append(summaryGraphVersionLabel.getText().replace("Version: ", ""))
+                    .append(": ")
+                    .append(String.format("%,d nodes, %,d edges", nodes, edges));
+            if (communities > 0) {
+                summary.append(String.format(", %,d communities", communities));
+            }
+            summary.append(". Merge policy: ").append(graphMergePolicy.replace('_', ' ')).append(".");
+            fetchGraphSummaryLabel.setText(summary.toString());
+        } else {
+            fetchGraphSummaryLabel.setText("No graph data loaded.");
+        }
     }
 
     public GraphExport getGraphPreviewData() {
@@ -976,8 +1179,10 @@ public class SymGraphTab extends JPanel {
     }
 
     public void clearConflicts() {
+        allConflicts.clear();
         conflictTableModel.setRowCount(0);
         displayedConflicts.clear();
+        conflictSelectionState.clear();
         fetchDocumentsTableModel.setRowCount(0);
         displayedFetchDocuments.clear();
         graphPreviewData = null;
@@ -991,13 +1196,16 @@ public class SymGraphTab extends JPanel {
         summaryGraphNodesLabel.setText("Graph Nodes: 0");
         summaryGraphEdgesLabel.setText("Graph Edges: 0");
         summaryGraphVersionLabel.setText("Version: -");
+        fetchGraphSummaryLabel.setText("No graph data loaded.");
         hidePullProgress();
         pullStatusLabel.setText("");
     }
 
     public List<ConflictEntry> getAllNewConflicts() {
         List<ConflictEntry> results = new ArrayList<>();
-        for (ConflictEntry conflict : displayedConflicts) {
+        for (ConflictEntry conflict : allConflicts) {
+            boolean selected = conflictSelectionState.getOrDefault(conflictKey(conflict), conflict.isSelected());
+            conflict.setSelected(selected);
             if (conflict.getAction() == ConflictAction.NEW) {
                 results.add(conflict);
             }
@@ -1007,9 +1215,11 @@ public class SymGraphTab extends JPanel {
 
     public List<ConflictEntry> getSelectedConflicts() {
         List<ConflictEntry> results = new ArrayList<>();
-        for (int i = 0; i < conflictTableModel.getRowCount() && i < displayedConflicts.size(); i++) {
-            if (Boolean.TRUE.equals(conflictTableModel.getValueAt(i, 0))) {
-                results.add(displayedConflicts.get(i));
+        for (ConflictEntry conflict : displayedConflicts) {
+            boolean selected = conflictSelectionState.getOrDefault(conflictKey(conflict), conflict.isSelected());
+            conflict.setSelected(selected);
+            if (selected) {
+                results.add(conflict);
             }
         }
         return results;
@@ -1051,9 +1261,11 @@ public class SymGraphTab extends JPanel {
     public void setButtonsEnabled(boolean enabled) {
         queryButton.setEnabled(enabled);
         pullPreviewButton.setEnabled(enabled);
+        fetchResetButton.setEnabled(enabled);
         applyButton.setEnabled(enabled);
         applyAllNewButton.setEnabled(enabled);
         pushPreviewButton.setEnabled(enabled);
+        pushResetButton.setEnabled(enabled);
         pushButton.setEnabled(enabled);
         selectAllButton.setEnabled(enabled);
         deselectAllButton.setEnabled(enabled);
@@ -1101,6 +1313,23 @@ public class SymGraphTab extends JPanel {
         } catch (NumberFormatException e) {
             return null;
         }
+    }
+
+    public void clearPushPreview() {
+        pushPreviewSymbols.clear();
+        pushPreviewDocuments.clear();
+        pushGraphData = null;
+        pushGraphNodes = 0;
+        pushGraphEdges = 0;
+        pushPreviewTableModel.setRowCount(0);
+        pushDocumentsTableModel.setRowCount(0);
+        pushMatchingCountLabel.setText("Matching: 0");
+        pushSelectedCountLabel.setText("Selected: 0 symbols / 0 docs");
+        pushDocumentsCountLabel.setText("Documents: 0");
+        pushGraphNodesLabel.setText("Graph Nodes: 0");
+        pushGraphEdgesLabel.setText("Graph Edges: 0");
+        pushGraphSummaryLabel.setText("No graph data included in this publish preview.");
+        setPushStatus("Ready", null);
     }
 
     public void setPushPreview(
@@ -1154,6 +1383,12 @@ public class SymGraphTab extends JPanel {
         pushDocumentsCountLabel.setText("Documents: " + pushPreviewDocuments.size());
         pushGraphNodesLabel.setText("Graph Nodes: " + nodes);
         pushGraphEdgesLabel.setText("Graph Edges: " + edges);
+        if (graphData != null) {
+            pushGraphSummaryLabel.setText(String.format(
+                    "Graph preview ready for publish: %,d nodes, %,d edges.", nodes, edges));
+        } else {
+            pushGraphSummaryLabel.setText("No graph data included in this publish preview.");
+        }
         updateSelectedCounts();
     }
 

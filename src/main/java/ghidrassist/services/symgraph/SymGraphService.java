@@ -1096,6 +1096,39 @@ public class SymGraphService {
         }
     }
 
+    public PushResult updateBinaryMetadata(String sha256, Map<String, Object> metadata)
+            throws IOException, SymGraphAuthException {
+        checkAuthRequired();
+
+        if (metadata == null || metadata.isEmpty()) {
+            return PushResult.success(0, 0, 0);
+        }
+
+        String url = getApiUrl() + "/api/v1/binaries/" + sha256;
+        Msg.debug(this, TAG + ": Updating binary metadata keys=" + metadata.keySet());
+
+        RequestBody body = RequestBody.create(gson.toJson(metadata), JSON);
+
+        Request request = new Request.Builder()
+                .url(url)
+                .patch(body)
+                .addHeader("Content-Type", "application/json")
+                .addHeader("Accept", "application/json")
+                .addHeader("X-API-Key", getApiKey())
+                .addHeader("User-Agent", "GhidrAssist-SymGraph/1.0")
+                .build();
+
+        try (Response response = client.newCall(request).execute()) {
+            if (response.code() == 401) {
+                throw new SymGraphAuthException("Invalid API key");
+            }
+            if (!response.isSuccessful()) {
+                return buildPushFailure("Error updating binary metadata", response);
+            }
+            return PushResult.success(0, 0, 0);
+        }
+    }
+
     /**
      * Add a fingerprint to a binary (authenticated).
      * Used for debug symbol matching (BuildID for ELF, PDB GUID for PE).

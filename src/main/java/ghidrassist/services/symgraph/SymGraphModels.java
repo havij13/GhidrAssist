@@ -53,16 +53,18 @@ public class SymGraphModels {
         private int symbolCount;
         private int functionCount;
         private int graphNodeCount;
+        private int graphEdgeCount;
         private int queryCount;
         private String lastQueriedAt;
 
         public BinaryStats() {}
 
-        public BinaryStats(int symbolCount, int functionCount, int graphNodeCount,
+        public BinaryStats(int symbolCount, int functionCount, int graphNodeCount, int graphEdgeCount,
                           int queryCount, String lastQueriedAt) {
             this.symbolCount = symbolCount;
             this.functionCount = functionCount;
             this.graphNodeCount = graphNodeCount;
+            this.graphEdgeCount = graphEdgeCount;
             this.queryCount = queryCount;
             this.lastQueriedAt = lastQueriedAt;
         }
@@ -73,6 +75,8 @@ public class SymGraphModels {
         public void setFunctionCount(int functionCount) { this.functionCount = functionCount; }
         public int getGraphNodeCount() { return graphNodeCount; }
         public void setGraphNodeCount(int graphNodeCount) { this.graphNodeCount = graphNodeCount; }
+        public int getGraphEdgeCount() { return graphEdgeCount; }
+        public void setGraphEdgeCount(int graphEdgeCount) { this.graphEdgeCount = graphEdgeCount; }
         public int getQueryCount() { return queryCount; }
         public void setQueryCount(int queryCount) { this.queryCount = queryCount; }
         public String getLastQueriedAt() { return lastQueriedAt; }
