@@ -1,9 +1,11 @@
 package ghidrassist.core;
 
 import ghidra.program.model.address.Address;
+import ghidra.program.database.mem.FileBytes;
 import ghidra.program.model.listing.Function;
 import ghidra.program.model.listing.FunctionIterator;
 import ghidra.program.model.listing.Program;
+import ghidra.program.model.mem.Memory;
 import ghidra.util.Msg;
 import ghidra.util.task.Task;
 import ghidra.util.task.TaskLauncher;
@@ -966,14 +968,21 @@ public class SymGraphController {
             metadata.put("file_name", fileName);
         }
 
+        Long fileSize = null;
         if (executablePath != null && !executablePath.isBlank()) {
             try {
                 File binaryFile = new File(executablePath);
                 if (binaryFile.isFile()) {
-                    metadata.put("file_size", binaryFile.length());
+                    fileSize = binaryFile.length();
                 }
             } catch (SecurityException ignored) {
             }
+        }
+        if (fileSize == null) {
+            fileSize = extractFileSizeFromFileBytes(program, fileName);
+        }
+        if (fileSize != null && fileSize >= 0) {
+            metadata.put("file_size", fileSize);
         }
 
         try {
@@ -1012,6 +1021,55 @@ public class SymGraphController {
         }
 
         return metadata;
+    }
+
+    private Long extractFileSizeFromFileBytes(Program program, String expectedFileName) {
+        try {
+            Memory memory = program.getMemory();
+            if (memory == null) {
+                return null;
+            }
+
+            List<FileBytes> allFileBytes = memory.getAllFileBytes();
+            if (allFileBytes == null || allFileBytes.isEmpty()) {
+                return null;
+            }
+
+            if (allFileBytes.size() == 1) {
+                return allFileBytes.get(0).getSize();
+            }
+
+            FileBytes matched = null;
+            FileBytes largest = null;
+            String expectedBaseName = stripPath(expectedFileName);
+
+            for (FileBytes fileBytes : allFileBytes) {
+                if (fileBytes == null) {
+                    continue;
+                }
+
+                if (largest == null || fileBytes.getSize() > largest.getSize()) {
+                    largest = fileBytes;
+                }
+
+                if (expectedBaseName == null || expectedBaseName.isBlank()) {
+                    continue;
+                }
+
+                String candidateName = stripPath(fileBytes.getFilename());
+                if (candidateName != null && candidateName.equalsIgnoreCase(expectedBaseName)) {
+                    matched = fileBytes;
+                    break;
+                }
+            }
+
+            if (matched != null) {
+                return matched.getSize();
+            }
+            return largest != null ? largest.getSize() : null;
+        } catch (Exception ignored) {
+            return null;
+        }
     }
 
     private String extractExecutablePath(Program program) {

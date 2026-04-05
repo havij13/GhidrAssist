@@ -197,12 +197,15 @@ public class SymGraphService {
         String url = urlBuilder.build().toString();
         Msg.debug(this, TAG + ": Getting binary stats: " + url);
 
-        Request request = new Request.Builder()
+        Request.Builder requestBuilder = new Request.Builder()
                 .url(url)
                 .get()
                 .addHeader("Accept", "application/json")
-                .addHeader("User-Agent", "GhidrAssist-SymGraph/1.0")
-                .build();
+                .addHeader("User-Agent", "GhidrAssist-SymGraph/1.0");
+        if (hasApiKey()) {
+            requestBuilder.addHeader("X-API-Key", getApiKey());
+        }
+        Request request = requestBuilder.build();
 
         try (Response response = client.newCall(request).execute()) {
             if (!response.isSuccessful()) {
@@ -318,6 +321,11 @@ public class SymGraphService {
 
             Integer effectiveVersion = version != null ? version : latestRevision;
             BinaryStats stats = getBinaryStats(sha256, effectiveVersion);
+            if (stats == null && effectiveVersion != null) {
+                Msg.warn(this, TAG + ": No stats returned for version " + effectiveVersion +
+                        ", retrying without an explicit version");
+                stats = getBinaryStats(sha256, null);
+            }
             return QueryResult.found(stats, revisions, latestRevision, effectiveVersion);
         } catch (Exception e) {
             Msg.error(this, TAG + ": Query error: " + e.getMessage());
