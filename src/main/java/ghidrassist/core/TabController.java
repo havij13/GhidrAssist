@@ -2569,6 +2569,10 @@ public class TabController {
         symGraphController.handleQuery();
     }
 
+    public void handleSymGraphUpload() {
+        symGraphController.handleUploadBinary();
+    }
+
     /**
      * Handle SymGraph push request.
      * Delegates to SymGraphController.

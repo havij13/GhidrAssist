@@ -37,9 +37,11 @@ public class SymGraphTab extends JPanel {
     // Overview
     private JCheckBox autoRefreshCheckBox;
     private JButton queryButton;
+    private JButton uploadBinaryButton;
     private JButton openBinaryButton;
     private JLabel statusLabel;
     private JLabel statusBadgeLabel;
+    private JLabel storageStatusLabel;
     private JPanel statsPanel;
     private JLabel symbolsStatLabel;
     private JLabel functionsStatLabel;
@@ -160,6 +162,7 @@ public class SymGraphTab extends JPanel {
         autoRefreshCheckBox.setSelected(Boolean.parseBoolean(
                 Preferences.getProperty("GhidrAssist.SymGraphAutoRefresh", "false")));
         queryButton = new JButton("Refresh");
+        uploadBinaryButton = new JButton("Upload Binary");
         openBinaryButton = new JButton("Open in SymGraph");
         openBinaryButton.setEnabled(false);
         statusLabel = new JLabel("Not checked");
@@ -168,6 +171,8 @@ public class SymGraphTab extends JPanel {
         statusBadgeLabel.setOpaque(true);
         statusBadgeLabel.setBorder(BorderFactory.createEmptyBorder(2, 8, 2, 8));
         statusBadgeLabel.setBackground(UIManager.getColor("Panel.background"));
+        storageStatusLabel = new JLabel("Stored Binary: Unknown");
+        storageStatusLabel.setForeground(Color.GRAY);
         symbolsStatLabel = new JLabel("Symbols: -");
         functionsStatLabel = new JLabel("Functions: -");
         nodesStatLabel = new JLabel("Graph Nodes: -");
@@ -196,8 +201,9 @@ public class SymGraphTab extends JPanel {
         statsPanel.add(latestRevisionLabel, statsGbc);
         statsGbc.gridx = 0;
         statsGbc.gridy = 3;
-        statsGbc.gridwidth = 2;
         statsPanel.add(accessibleVersionsLabel, statsGbc);
+        statsGbc.gridx = 1;
+        statsPanel.add(storageStatusLabel, statsGbc);
         statsPanel.setBorder(BorderFactory.createCompoundBorder(
                 BorderFactory.createEtchedBorder(),
                 BorderFactory.createEmptyBorder(6, 8, 6, 8)));
@@ -405,6 +411,7 @@ public class SymGraphTab extends JPanel {
         buttonRow.setAlignmentX(Component.LEFT_ALIGNMENT);
         buttonRow.add(autoRefreshCheckBox);
         buttonRow.add(queryButton);
+        buttonRow.add(uploadBinaryButton);
         buttonRow.add(openBinaryButton);
         statusCard.add(buttonRow);
 
@@ -732,6 +739,7 @@ public class SymGraphTab extends JPanel {
             Preferences.store();
         });
         queryButton.addActionListener(e -> controller.handleSymGraphQuery());
+        uploadBinaryButton.addActionListener(e -> controller.handleSymGraphUpload());
         openBinaryButton.addActionListener(e -> {
             if (openBinaryUrl != null && Desktop.isDesktopSupported()) {
                 try {
@@ -941,6 +949,7 @@ public class SymGraphTab extends JPanel {
         statusBadgeLabel.setForeground(UIManager.getColor("Label.foreground"));
         statusLabel.setForeground(Color.GRAY);
         statusLabel.setText("Use Refresh to check whether this binary already exists in SymGraph.");
+        setStorageStatus(null);
     }
 
     public void setStats(int symbols, int functions, int nodes, int edges, String lastUpdated) {
@@ -991,6 +1000,19 @@ public class SymGraphTab extends JPanel {
     public void setOpenBinaryUrl(String url) {
         this.openBinaryUrl = url;
         openBinaryButton.setEnabled(url != null && !url.isEmpty());
+    }
+
+    public void setStorageStatus(Boolean stored) {
+        if (Boolean.TRUE.equals(stored)) {
+            storageStatusLabel.setText("Stored Binary: Stored");
+            storageStatusLabel.setForeground(new Color(0, 128, 0));
+        } else if (Boolean.FALSE.equals(stored)) {
+            storageStatusLabel.setText("Stored Binary: Missing");
+            storageStatusLabel.setForeground(Color.RED);
+        } else {
+            storageStatusLabel.setText("Stored Binary: Unknown");
+            storageStatusLabel.setForeground(Color.GRAY);
+        }
     }
 
     public boolean isAutoRefreshEnabled() {
@@ -1260,6 +1282,7 @@ public class SymGraphTab extends JPanel {
 
     public void setButtonsEnabled(boolean enabled) {
         queryButton.setEnabled(enabled);
+        uploadBinaryButton.setEnabled(enabled);
         pullPreviewButton.setEnabled(enabled);
         fetchResetButton.setEnabled(enabled);
         applyButton.setEnabled(enabled);

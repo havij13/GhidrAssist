@@ -240,6 +240,91 @@ public class SymGraphService {
         }
     }
 
+    public Boolean getStoredBinaryFlag(String sha256) throws IOException, SymGraphAuthException {
+        checkAuthRequired();
+
+        String url = getApiUrl() + "/api/v1/binaries/" + sha256;
+        Msg.debug(this, TAG + ": Getting binary info: " + url);
+
+        Request request = new Request.Builder()
+                .url(url)
+                .get()
+                .addHeader("Accept", "application/json")
+                .addHeader("X-API-Key", getApiKey())
+                .addHeader("User-Agent", "GhidrAssist-SymGraph/1.0")
+                .build();
+
+        try (Response response = client.newCall(request).execute()) {
+            if (response.code() == 401) {
+                throw new SymGraphAuthException("Invalid API key");
+            }
+            if (response.code() == 404) {
+                return Boolean.FALSE;
+            }
+            if (!response.isSuccessful()) {
+                throw new IOException("Unexpected response: " + response.code());
+            }
+
+            String body = response.body().string();
+            JsonObject json = JsonParser.parseString(body).getAsJsonObject();
+            if (json.has("has_stored_binary") && !json.get("has_stored_binary").isJsonNull()) {
+                return json.get("has_stored_binary").getAsBoolean();
+            }
+            if (json.has("binary") && json.get("binary").isJsonObject()) {
+                JsonObject binaryJson = json.getAsJsonObject("binary");
+                if (binaryJson.has("has_stored_binary") && !binaryJson.get("has_stored_binary").isJsonNull()) {
+                    return binaryJson.get("has_stored_binary").getAsBoolean();
+                }
+            }
+            return null;
+        }
+    }
+
+    public BinaryUploadResult uploadBinary(String fileName, byte[] fileBytes)
+            throws IOException, SymGraphAuthException {
+        checkAuthRequired();
+
+        String uploadName = (fileName == null || fileName.isBlank()) ? "binary.bin" : fileName;
+        String url = getApiUrl() + "/api/v1/analysis/upload";
+        Msg.debug(this, TAG + ": Uploading raw binary: " + uploadName + " (" + fileBytes.length + " bytes)");
+
+        RequestBody fileBody = RequestBody.create(fileBytes, MediaType.parse("application/octet-stream"));
+        RequestBody body = new MultipartBody.Builder()
+                .setType(MultipartBody.FORM)
+                .addFormDataPart("file", uploadName, fileBody)
+                .build();
+
+        Request request = new Request.Builder()
+                .url(url)
+                .post(body)
+                .addHeader("Accept", "application/json")
+                .addHeader("X-API-Key", getApiKey())
+                .addHeader("User-Agent", "GhidrAssist-SymGraph/1.0")
+                .build();
+
+        try (Response response = client.newCall(request).execute()) {
+            if (response.code() == 401) {
+                throw new SymGraphAuthException("Invalid API key");
+            }
+            if (!response.isSuccessful()) {
+                throw buildApiIOException("Error uploading binary", response);
+            }
+
+            String responseBody = response.body().string();
+            JsonObject json = JsonParser.parseString(responseBody).getAsJsonObject();
+            BinaryUploadResult result = new BinaryUploadResult();
+            result.setSha256(getStringOrNull(json, "sha256"));
+            result.setBinaryId(getStringOrNull(json, "binary_id"));
+            result.setFileSize(getLongOrDefault(json, "file_size", 0));
+            result.setNew(json.has("is_new") && !json.get("is_new").isJsonNull() && json.get("is_new").getAsBoolean());
+            result.setMessage(getStringOrNull(json, "message"));
+            result.setMetadataExtracted(json.has("metadata_extracted")
+                    && !json.get("metadata_extracted").isJsonNull()
+                    && json.get("metadata_extracted").getAsBoolean());
+            return result;
+        }
+    }
+
     /**
      * List accessible binary revisions (authenticated).
      */
@@ -308,6 +393,14 @@ public class SymGraphService {
 
             List<BinaryRevision> revisions = new ArrayList<>();
             Integer latestRevision = null;
+            Boolean hasStoredBinary = null;
+            if (hasApiKey()) {
+                try {
+                    hasStoredBinary = getStoredBinaryFlag(sha256);
+                } catch (Exception e) {
+                    Msg.warn(this, TAG + ": Unable to fetch binary storage state: " + e.getMessage());
+                }
+            }
             if (includeVersions && hasApiKey()) {
                 try {
                     revisions = listBinaryVersions(sha256);
@@ -326,7 +419,7 @@ public class SymGraphService {
                         ", retrying without an explicit version");
                 stats = getBinaryStats(sha256, null);
             }
-            return QueryResult.found(stats, revisions, latestRevision, effectiveVersion);
+            return QueryResult.found(stats, revisions, latestRevision, effectiveVersion, hasStoredBinary);
         } catch (Exception e) {
             Msg.error(this, TAG + ": Query error: " + e.getMessage());
             return QueryResult.error(e.getMessage());

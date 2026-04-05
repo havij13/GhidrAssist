@@ -24,7 +24,9 @@ import ghidrassist.workers.SymGraphPullWorker;
 
 import javax.swing.*;
 import java.io.File;
+import java.io.IOException;
 import java.lang.reflect.Method;
+import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -58,6 +60,7 @@ public class SymGraphController {
     private String pendingPushVisibility = "public";
     private String pendingApplyBaseMessage;
     private String lastBinarySha;
+    private Boolean lastHasStoredBinary;
 
     public SymGraphController(
             GhidrAssistPlugin plugin,
@@ -97,24 +100,34 @@ public class SymGraphController {
         }
 
         symGraphTab.setQueryStatus("Checking...", false);
+        symGraphTab.setStorageStatus(null);
         symGraphTab.hideStats();
         symGraphTab.setOpenBinaryUrl(null);
         symGraphTab.setButtonsEnabled(false);
 
+        final String expectedSha = sha256;
         Task task = new Task("Query SymGraph", true, true, false) {
             @Override
             public void run(TaskMonitor monitor) {
                 try {
-                    QueryResult result = symGraphService.queryBinary(sha256, null, true);
+                    QueryResult result = symGraphService.queryBinary(expectedSha, null, true);
 
                     SwingUtilities.invokeLater(() -> {
+                        String currentSha = getProgramSHA256();
+                        if (currentSha == null || !expectedSha.equals(currentSha)) {
+                            return;
+                        }
                         symGraphTab.setButtonsEnabled(true);
                         if (result.getError() != null) {
+                            lastHasStoredBinary = null;
                             symGraphTab.setQueryStatus("Error: " + result.getError(), false);
+                            symGraphTab.setStorageStatus(null);
                             symGraphTab.setOpenBinaryUrl(null);
                         } else if (result.isExists()) {
+                            lastHasStoredBinary = result.getHasStoredBinary();
                             symGraphTab.setQueryStatus("Found in SymGraph", true);
-                            symGraphTab.setOpenBinaryUrl(symGraphService.getBinaryUrl(sha256));
+                            symGraphTab.setStorageStatus(result.getHasStoredBinary());
+                            symGraphTab.setOpenBinaryUrl(symGraphService.getBinaryUrl(expectedSha));
                             if (result.getStats() != null) {
                                 BinaryStats stats = result.getStats();
                                 symGraphTab.setStats(
@@ -127,9 +140,13 @@ public class SymGraphController {
                                     result.getLatestRevision(),
                                     result.getSelectedRevision()
                                 );
+                            } else {
+                                symGraphTab.hideStats();
                             }
                         } else {
+                            lastHasStoredBinary = null;
                             symGraphTab.setQueryStatus("Not found in SymGraph", false);
+                            symGraphTab.setStorageStatus(null);
                             symGraphTab.setOpenBinaryUrl(null);
                             symGraphTab.hideStats();
                         }
@@ -137,9 +154,83 @@ public class SymGraphController {
                 } catch (Exception e) {
                     Msg.error(this, "Query error: " + e.getMessage(), e);
                     SwingUtilities.invokeLater(() -> {
+                        String currentSha = getProgramSHA256();
+                        if (currentSha == null || !expectedSha.equals(currentSha)) {
+                            return;
+                        }
+                        lastHasStoredBinary = null;
                         symGraphTab.setButtonsEnabled(true);
                         symGraphTab.setQueryStatus("Error: " + e.getMessage(), false);
+                        symGraphTab.setStorageStatus(null);
                         symGraphTab.setOpenBinaryUrl(null);
+                    });
+                }
+            }
+        };
+        TaskLauncher.launch(task);
+    }
+
+    public void handleUploadBinary() {
+        if (symGraphTab == null || symGraphService == null) {
+            Msg.showError(this, null, "Error", "SymGraph tab not initialized");
+            return;
+        }
+
+        String sha256 = getProgramSHA256();
+        if (sha256 == null) {
+            Msg.showInfo(this, symGraphTab, "No Binary", "No binary loaded or unable to compute hash.");
+            return;
+        }
+
+        if (!symGraphService.hasApiKey()) {
+            Msg.showError(this, symGraphTab, "API Key Required",
+                "Upload requires a SymGraph API key.\n\nAdd your API key in Settings > General > SymGraph");
+            return;
+        }
+
+        BinaryUploadPayload payload = buildBinaryUploadPayload(plugin.getCurrentProgram());
+        if (payload == null) {
+            Msg.showError(this, symGraphTab, "Upload Unavailable",
+                "Unable to access the original raw binary bytes for upload.");
+            return;
+        }
+
+        symGraphTab.setButtonsEnabled(false);
+        symGraphTab.setQueryStatus("Uploading raw binary...", false);
+        symGraphTab.setStorageStatus(null);
+
+        final String expectedSha = sha256;
+        Task task = new Task("Upload Raw Binary", true, true, false) {
+            @Override
+            public void run(TaskMonitor monitor) {
+                try {
+                    BinaryUploadResult result = symGraphService.uploadBinary(payload.fileName, payload.fileBytes);
+                    String returnedSha = result.getSha256();
+                    if (returnedSha == null || !expectedSha.equalsIgnoreCase(returnedSha)) {
+                        throw new IOException("Uploaded binary SHA256 did not match the active binary");
+                    }
+
+                    SwingUtilities.invokeLater(() -> {
+                        String currentSha = getProgramSHA256();
+                        if (currentSha == null || !expectedSha.equals(currentSha)) {
+                            return;
+                        }
+                        lastHasStoredBinary = Boolean.TRUE;
+                        symGraphTab.setButtonsEnabled(true);
+                        symGraphTab.setStorageStatus(true);
+                        symGraphTab.setQueryStatus("Raw binary uploaded", true);
+                        handleQuery();
+                    });
+                } catch (Exception e) {
+                    Msg.error(this, "Upload error: " + e.getMessage(), e);
+                    SwingUtilities.invokeLater(() -> {
+                        String currentSha = getProgramSHA256();
+                        if (currentSha == null || !expectedSha.equals(currentSha)) {
+                            return;
+                        }
+                        symGraphTab.setButtonsEnabled(true);
+                        symGraphTab.setQueryStatus("Error: " + e.getMessage(), false);
+                        symGraphTab.setStorageStatus(null);
                     });
                 }
             }
@@ -278,6 +369,8 @@ public class SymGraphController {
         final Map<String, Object> graphDataToPush = graphData;
         final Map<String, Object> binaryMetadata = buildOriginalBinaryMetadata();
         final String visibilityForPush = resolvedVisibility;
+        final Program programForUpload = plugin.getCurrentProgram();
+        final boolean ensureBinaryUpload = !Boolean.TRUE.equals(lastHasStoredBinary);
         Thread pushThread = new Thread(() -> {
             try {
                 // Build PLT/thunk address map up front so it's available for both symbol and graph collection
@@ -303,6 +396,25 @@ public class SymGraphController {
                 }
 
                 PushResult totalResult = PushResult.success(0, 0, 0);
+                if (ensureBinaryUpload) {
+                    SwingUtilities.invokeLater(
+                        () -> symGraphTab.updatePushProgress(10, 100, "Uploading raw binary..."));
+                    BinaryUploadPayload payload = buildBinaryUploadPayload(programForUpload);
+                    if (payload == null) {
+                        SwingUtilities.invokeLater(
+                            () -> handlePushFailure(PushResult.failure("Unable to access raw binary bytes for upload")));
+                        return;
+                    }
+                    BinaryUploadResult uploadResult = symGraphService.uploadBinary(payload.fileName, payload.fileBytes);
+                    String returnedSha = uploadResult.getSha256();
+                    if (returnedSha == null || !sha256.equalsIgnoreCase(returnedSha)) {
+                        SwingUtilities.invokeLater(() -> handlePushFailure(
+                            PushResult.failure("Uploaded binary SHA256 did not match the active binary")));
+                        return;
+                    }
+                    lastHasStoredBinary = Boolean.TRUE;
+                }
+
                 PushResult revisionResult = symGraphService.createBinaryRevision(sha256, visibilityForPush);
                 if (!revisionResult.isSuccess()) {
                     final PushResult failureResult = revisionResult;
@@ -385,6 +497,8 @@ public class SymGraphController {
                 SwingUtilities.invokeLater(() -> {
                     symGraphTab.hidePushProgress();
                     symGraphTab.setButtonsEnabled(true);
+                    lastHasStoredBinary = Boolean.TRUE;
+                    symGraphTab.setStorageStatus(true);
                     StringBuilder msg = new StringBuilder("Pushed: ");
                     List<String> parts = new ArrayList<>();
                     if (result.getSymbolsPushed() > 0) parts.add(result.getSymbolsPushed() + " symbols");
@@ -898,6 +1012,7 @@ public class SymGraphController {
             symGraphTab.setBinaryInfo(name, sha256, buildLocalSummary(sha256));
             if (sha256 != null && !sha256.equals(lastBinarySha)) {
                 lastBinarySha = sha256;
+                lastHasStoredBinary = null;
                 symGraphTab.hideStats();
                 symGraphTab.resetQueryStatus();
                 symGraphTab.setOpenBinaryUrl(null);
@@ -909,6 +1024,7 @@ public class SymGraphController {
             }
         } else {
             lastBinarySha = null;
+            lastHasStoredBinary = null;
             symGraphTab.setBinaryInfo(null, null);
             symGraphTab.hideStats();
             symGraphTab.resetQueryStatus();
@@ -1024,6 +1140,52 @@ public class SymGraphController {
     }
 
     private Long extractFileSizeFromFileBytes(Program program, String expectedFileName) {
+        FileBytes selected = selectFileBytes(program, expectedFileName);
+        return selected != null ? selected.getSize() : null;
+    }
+
+    private BinaryUploadPayload buildBinaryUploadPayload(Program program) {
+        if (program == null) {
+            return null;
+        }
+
+        String executablePath = extractExecutablePath(program);
+        String fileName = stripPath(executablePath);
+        if (fileName == null || fileName.isBlank()) {
+            fileName = stripPath(program.getName());
+        }
+        if (fileName == null || fileName.isBlank()) {
+            fileName = "binary.bin";
+        }
+
+        if (executablePath != null && !executablePath.isBlank()) {
+            try {
+                File binaryFile = new File(executablePath);
+                if (binaryFile.isFile()) {
+                    return new BinaryUploadPayload(fileName, Files.readAllBytes(binaryFile.toPath()));
+                }
+            } catch (IOException | SecurityException ignored) {
+            }
+        }
+
+        FileBytes fileBytes = selectFileBytes(program, fileName);
+        if (fileBytes == null) {
+            return null;
+        }
+
+        try {
+            String fallbackName = stripPath(fileBytes.getFilename());
+            if (fallbackName != null && !fallbackName.isBlank()) {
+                fileName = fallbackName;
+            }
+            return new BinaryUploadPayload(fileName, readOriginalFileBytes(fileBytes));
+        } catch (IOException e) {
+            Msg.error(this, "Error reading FileBytes for upload: " + e.getMessage(), e);
+            return null;
+        }
+    }
+
+    private FileBytes selectFileBytes(Program program, String expectedFileName) {
         try {
             Memory memory = program.getMemory();
             if (memory == null) {
@@ -1036,7 +1198,7 @@ public class SymGraphController {
             }
 
             if (allFileBytes.size() == 1) {
-                return allFileBytes.get(0).getSize();
+                return allFileBytes.get(0);
             }
 
             FileBytes matched = null;
@@ -1064,11 +1226,35 @@ public class SymGraphController {
             }
 
             if (matched != null) {
-                return matched.getSize();
+                return matched;
             }
-            return largest != null ? largest.getSize() : null;
+            return largest;
         } catch (Exception ignored) {
             return null;
+        }
+    }
+
+    private byte[] readOriginalFileBytes(FileBytes fileBytes) throws IOException {
+        long size = fileBytes.getSize();
+        if (size < 0 || size > Integer.MAX_VALUE) {
+            throw new IOException("Unsupported FileBytes size for upload: " + size);
+        }
+
+        byte[] data = new byte[(int) size];
+        int bytesRead = fileBytes.getOriginalBytes(0, data);
+        if (bytesRead != data.length) {
+            throw new IOException("Expected " + data.length + " bytes from FileBytes but read " + bytesRead);
+        }
+        return data;
+    }
+
+    private static final class BinaryUploadPayload {
+        private final String fileName;
+        private final byte[] fileBytes;
+
+        private BinaryUploadPayload(String fileName, byte[] fileBytes) {
+            this.fileName = fileName;
+            this.fileBytes = fileBytes;
         }
     }
 

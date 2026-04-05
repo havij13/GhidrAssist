@@ -83,6 +83,28 @@ public class SymGraphModels {
         public void setLastQueriedAt(String lastQueriedAt) { this.lastQueriedAt = lastQueriedAt; }
     }
 
+    public static class BinaryUploadResult {
+        private String sha256;
+        private String binaryId;
+        private long fileSize;
+        private boolean isNew;
+        private String message;
+        private boolean metadataExtracted;
+
+        public String getSha256() { return sha256; }
+        public void setSha256(String sha256) { this.sha256 = sha256; }
+        public String getBinaryId() { return binaryId; }
+        public void setBinaryId(String binaryId) { this.binaryId = binaryId; }
+        public long getFileSize() { return fileSize; }
+        public void setFileSize(long fileSize) { this.fileSize = fileSize; }
+        public boolean isNew() { return isNew; }
+        public void setNew(boolean aNew) { isNew = aNew; }
+        public String getMessage() { return message; }
+        public void setMessage(String message) { this.message = message; }
+        public boolean isMetadataExtracted() { return metadataExtracted; }
+        public void setMetadataExtracted(boolean metadataExtracted) { this.metadataExtracted = metadataExtracted; }
+    }
+
     /**
      * Accessible binary revision metadata.
      */
@@ -393,6 +415,7 @@ public class SymGraphModels {
         private List<BinaryRevision> revisions = new ArrayList<>();
         private Integer latestRevision;
         private Integer selectedRevision;
+        private Boolean hasStoredBinary;
         private String error;
 
         public QueryResult() {}
@@ -408,13 +431,15 @@ public class SymGraphModels {
                 BinaryStats stats,
                 List<BinaryRevision> revisions,
                 Integer latestRevision,
-                Integer selectedRevision) {
+                Integer selectedRevision,
+                Boolean hasStoredBinary) {
             QueryResult result = new QueryResult();
             result.exists = true;
             result.stats = stats;
             result.revisions = revisions != null ? revisions : new ArrayList<>();
             result.latestRevision = latestRevision;
             result.selectedRevision = selectedRevision;
+            result.hasStoredBinary = hasStoredBinary;
             return result;
         }
 
@@ -441,6 +466,8 @@ public class SymGraphModels {
         public void setLatestRevision(Integer latestRevision) { this.latestRevision = latestRevision; }
         public Integer getSelectedRevision() { return selectedRevision; }
         public void setSelectedRevision(Integer selectedRevision) { this.selectedRevision = selectedRevision; }
+        public Boolean getHasStoredBinary() { return hasStoredBinary; }
+        public void setHasStoredBinary(Boolean hasStoredBinary) { this.hasStoredBinary = hasStoredBinary; }
         public String getError() { return error; }
         public void setError(String error) { this.error = error; }
     }
