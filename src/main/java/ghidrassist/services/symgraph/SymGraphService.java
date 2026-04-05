@@ -224,6 +224,7 @@ public class SymGraphService {
             stats.setSymbolCount(getIntOrDefault(statsJson, "symbol_count", 0));
             stats.setFunctionCount(getIntOrDefault(statsJson, "function_count", 0));
             stats.setGraphNodeCount(getIntOrDefault(statsJson, "graph_node_count", 0));
+            stats.setGraphEdgeCount(getIntOrDefault(statsJson, "graph_edge_count", 0));
             stats.setQueryCount(getIntOrDefault(statsJson, "query_count", 0));
             // last_queried_at might be at top level even when stats are nested
             String lastQueried = getStringOrNull(json, "last_queried_at");
@@ -254,14 +255,14 @@ public class SymGraphService {
                 .build();
 
         try (Response response = client.newCall(request).execute()) {
-            if (response.code() == 401 || response.code() == 403) {
+            if (response.code() == 401) {
                 throw new SymGraphAuthException("Invalid API key");
             }
             if (response.code() == 404) {
                 return new ArrayList<>();
             }
             if (!response.isSuccessful()) {
-                throw new IOException("Error listing binary versions: " + response.code());
+                throw buildApiIOException("Error listing binary versions", response);
             }
 
             String body = response.body().string();
@@ -371,7 +372,7 @@ public class SymGraphService {
                 return new ArrayList<>();
             }
             if (!response.isSuccessful()) {
-                throw new IOException("Error getting symbols: " + response.code());
+                throw buildApiIOException("Error getting symbols", response);
             }
 
             String body = response.body().string();
@@ -617,7 +618,7 @@ public class SymGraphService {
                 return new ArrayList<>();
             }
             if (!response.isSuccessful()) {
-                throw new IOException("Error listing documents: " + response.code());
+                throw buildApiIOException("Error listing documents", response);
             }
 
             String body = response.body().string();
@@ -668,7 +669,7 @@ public class SymGraphService {
                 return null;
             }
             if (!response.isSuccessful()) {
-                throw new IOException("Error getting document: " + response.code());
+                throw buildApiIOException("Error getting document", response);
             }
 
             String body = response.body().string();
@@ -1213,6 +1214,28 @@ public class SymGraphService {
         }
 
         return PushResult.failure(message, errorCode, requestedVisibility, suggestedVisibility);
+    }
+
+    private IOException buildApiIOException(String prefix, Response response) throws IOException {
+        String errorBody = response.body() != null ? response.body().string() : "";
+        String message = prefix + ": HTTP " + response.code();
+        if (errorBody != null && !errorBody.isEmpty()) {
+            try {
+                JsonElement errorElement = JsonParser.parseString(errorBody);
+                if (errorElement.isJsonObject()) {
+                    JsonObject errorJson = errorElement.getAsJsonObject();
+                    String apiMessage = getStringOrNull(errorJson, "error");
+                    if (apiMessage != null && !apiMessage.isEmpty()) {
+                        message = prefix + ": " + apiMessage;
+                    }
+                } else {
+                    message = prefix + ": " + errorBody;
+                }
+            } catch (Exception parseError) {
+                message = prefix + ": " + errorBody;
+            }
+        }
+        return new IOException(message);
     }
 
     private Map<String, Object> buildGraphExportPayload(String sha256, Map<String, Object> graphData) {
