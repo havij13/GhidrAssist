@@ -110,7 +110,7 @@ public class SymGraphService {
     // === Settings helpers ===
 
     public String getApiUrl() {
-        String url = Preferences.getProperty("GhidrAssist.SymGraphAPIUrl", "https://api.symgraph.com");
+        String url = Preferences.getProperty("GhidrAssist.SymGraphAPIUrl", "https://symgraph.ai");
         return url.endsWith("/") ? url.substring(0, url.length() - 1) : url;
     }
 

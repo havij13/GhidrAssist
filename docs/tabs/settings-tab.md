@@ -107,7 +107,7 @@ Configure Model Context Protocol (MCP) servers that provide tools.
 Configure the SymGraph cloud service for symbol sharing.
 
 Fields:
-- **API URL**: Default `https://api.symgraph.com`
+- **API URL**: Default `https://symgraph.ai`
 - **API Key**: Required for push/pull operations
 - **Show/Hide**: Toggle visibility
 - **Test Connection**: Verify credentials

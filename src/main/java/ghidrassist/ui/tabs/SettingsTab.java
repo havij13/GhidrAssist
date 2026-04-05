@@ -336,7 +336,7 @@ public class SettingsTab extends JPanel {
         // API URL row
         JPanel urlRow = new JPanel(new FlowLayout(FlowLayout.LEFT));
         urlRow.add(new JLabel("API URL:"));
-        symGraphUrlField.setText(Preferences.getProperty("GhidrAssist.SymGraphAPIUrl", "https://api.symgraph.com"));
+        symGraphUrlField.setText(Preferences.getProperty("GhidrAssist.SymGraphAPIUrl", "https://symgraph.ai"));
         symGraphUrlField.setToolTipText("SymGraph API URL (for self-hosted instances)");
         urlRow.add(symGraphUrlField);
 
