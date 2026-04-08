@@ -5,6 +5,7 @@ import ghidrassist.apiprovider.ChatMessage;
 import ghidrassist.apiprovider.ReasoningConfig;
 import ghidrassist.context.CharacterBasedTokenCounter;
 import ghidrassist.context.ContextWindowConfig;
+import ghidrassist.context.ContextWindowListener;
 import ghidrassist.context.ContextWindowManager;
 import ghidrassist.core.ConversationalToolHandler;
 import ghidrassist.core.LlmApiClient;
@@ -29,6 +30,7 @@ public class LlmApi {
     private final LlmTaskExecutor taskExecutor;
     private final LlmErrorHandler errorHandler;
     private volatile ConversationalToolHandler activeConversationalHandler;
+    private volatile ContextWindowListener contextWindowListener;
     
     public LlmApi(APIProviderConfig config, GhidrAssistPlugin plugin) {
         this.apiClient = new LlmApiClient(config, plugin);
@@ -113,7 +115,7 @@ public class LlmApi {
 
         // Construct ContextWindowManager for proper context management
         ContextWindowManager cwm = new ContextWindowManager(
-            new ContextWindowConfig(), new CharacterBasedTokenCounter(), this);
+            new ContextWindowConfig(), new CharacterBasedTokenCounter(), this, contextWindowListener);
 
         // Create enhanced response handler for conversational tool calling
         ConversationalToolHandler toolHandler = new ConversationalToolHandler(
@@ -162,7 +164,7 @@ public class LlmApi {
 
         // Construct ContextWindowManager for proper context management
         ContextWindowManager cwm = new ContextWindowManager(
-            new ContextWindowConfig(), new CharacterBasedTokenCounter(), this);
+            new ContextWindowConfig(), new CharacterBasedTokenCounter(), this, contextWindowListener);
 
         // Create enhanced response handler for conversational tool calling
         ConversationalToolHandler toolHandler = new ConversationalToolHandler(
@@ -251,6 +253,18 @@ public class LlmApi {
         return String.format("Provider: %s, Model: %s",
             apiClient.getProviderName(),
             apiClient.getProviderModel());
+    }
+
+    public String getProviderName() {
+        return apiClient.getProviderName();
+    }
+
+    public String getProviderModel() {
+        return apiClient.getProviderModel();
+    }
+
+    public void setContextWindowListener(ContextWindowListener contextWindowListener) {
+        this.contextWindowListener = contextWindowListener;
     }
 
     /**

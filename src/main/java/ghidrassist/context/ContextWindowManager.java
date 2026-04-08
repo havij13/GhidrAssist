@@ -25,15 +25,22 @@ public class ContextWindowManager {
     private final ContextWindowConfig config;
     private final TokenCounter tokenCounter;
     private final LlmApi llmApi; // For LLM-based summarization (optional)
+    private final ContextWindowListener listener;
 
     public ContextWindowManager(ContextWindowConfig config, TokenCounter tokenCounter) {
-        this(config, tokenCounter, null);
+        this(config, tokenCounter, null, null);
     }
 
     public ContextWindowManager(ContextWindowConfig config, TokenCounter tokenCounter, LlmApi llmApi) {
+        this(config, tokenCounter, llmApi, null);
+    }
+
+    public ContextWindowManager(ContextWindowConfig config, TokenCounter tokenCounter, LlmApi llmApi,
+                                ContextWindowListener listener) {
         this.config = config;
         this.tokenCounter = tokenCounter;
         this.llmApi = llmApi;
+        this.listener = listener;
     }
 
     /**
@@ -64,12 +71,15 @@ public class ContextWindowManager {
             // If within limits, return original history
             if (!status.needsCompression()) {
                 Msg.debug(this, "Context within limits: " + status);
+                notifyStatus(status);
                 future.complete(conversationHistory);
                 return future;
             }
 
             // Phase 3: Compression needed - LLM summarize with extractive fallback
             Msg.info(this, "Context compression needed: " + status);
+            notifyStatus(status);
+            int originalMessageCount = conversationHistory.size();
 
             compressHistory(conversationHistory)
                 .thenAccept(compressedHistory -> {
@@ -80,9 +90,26 @@ public class ContextWindowManager {
 
                     // Phase 4: Re-check after compression - emergency truncate if still over
                     ContextStatus postStatus = getStatus(compressedHistory, tools).join();
+                    notifyStatus(postStatus);
+                    if (compressedHistory.size() < originalMessageCount) {
+                        notifyCompacted(
+                            buildCompactionSummary(status, postStatus, originalMessageCount, compressedHistory.size()),
+                            originalMessageCount,
+                            compressedHistory.size()
+                        );
+                    }
                     if (postStatus.needsCompression()) {
                         Msg.warn(this, "Still over threshold after compression, applying emergency truncation: " + postStatus);
                         List<ChatMessage> emergency = emergencyTruncate(compressedHistory);
+                        notifyStatus(getStatus(emergency, tools).join());
+                        if (emergency.size() < compressedHistory.size()) {
+                            notifyCompacted(
+                                buildCompactionSummary(postStatus, getStatus(emergency, tools).join(),
+                                    compressedHistory.size(), emergency.size()),
+                                compressedHistory.size(),
+                                emergency.size()
+                            );
+                        }
                         future.complete(emergency);
                     } else {
                         future.complete(compressedHistory);
@@ -526,5 +553,34 @@ public class ContextWindowManager {
     // Getters
     public ContextWindowConfig getConfig() {
         return config;
+    }
+
+    private void notifyStatus(ContextStatus status) {
+        if (listener != null && status != null) {
+            listener.onStatusUpdated(status);
+        }
+    }
+
+    private void notifyCompacted(String summary, int originalMessageCount, int finalMessageCount) {
+        if (listener != null) {
+            listener.onContextCompacted(summary, originalMessageCount, finalMessageCount);
+        }
+    }
+
+    private String buildCompactionSummary(ContextStatus before, ContextStatus after,
+                                          int originalMessageCount, int finalMessageCount) {
+        String beforeSummary = before != null
+            ? before.getCurrentTokens() + "/" + before.getMaxTokens() + " tokens"
+            : "unknown";
+        String afterSummary = after != null
+            ? after.getCurrentTokens() + "/" + after.getMaxTokens() + " tokens"
+            : "unknown";
+        return String.format(
+            "Compacted conversation history from %d to %d messages.\n\nBefore: %s\nAfter: %s",
+            originalMessageCount,
+            finalMessageCount,
+            beforeSummary,
+            afterSummary
+        );
     }
 }

@@ -485,7 +485,8 @@ public class OpenAIOAuthProvider extends APIProvider implements FunctionCallingP
                 JsonArray content = item.has("content") ? item.getAsJsonArray("content") : new JsonArray();
                 for (JsonElement partElement : content) {
                     JsonObject part = partElement.getAsJsonObject();
-                    if ("output_text".equals(part.has("type") ? part.get("type").getAsString() : "")) {
+                    String partType = part.has("type") ? part.get("type").getAsString() : "";
+                    if ("output_text".equals(partType) || "text".equals(partType)) {
                         if (part.has("text")) {
                             textContent.append(part.get("text").getAsString());
                         }
@@ -500,7 +501,16 @@ public class OpenAIOAuthProvider extends APIProvider implements FunctionCallingP
                 
                 JsonObject function = new JsonObject();
                 function.addProperty("name", item.get("name").getAsString());
-                function.addProperty("arguments", item.get("arguments").getAsString());
+                JsonElement arguments = item.get("arguments");
+                if (arguments != null && !arguments.isJsonNull()) {
+                    if (arguments.isJsonPrimitive() && arguments.getAsJsonPrimitive().isString()) {
+                        function.addProperty("arguments", arguments.getAsString());
+                    } else {
+                        function.addProperty("arguments", gson.toJson(arguments));
+                    }
+                } else {
+                    function.addProperty("arguments", "{}");
+                }
                 toolCall.add("function", function);
                 
                 toolCalls.add(toolCall);
@@ -687,6 +697,8 @@ public class OpenAIOAuthProvider extends APIProvider implements FunctionCallingP
      */
     private JsonObject collectStreamingResponse(Response response) throws IOException {
         JsonObject finalResponse = new JsonObject();
+        JsonArray outputItems = new JsonArray();
+        int outputItemCount = 0;
         
         try (ResponseBody body = response.body()) {
             if (body == null) return finalResponse;
@@ -706,19 +718,34 @@ public class OpenAIOAuthProvider extends APIProvider implements FunctionCallingP
                     try {
                         JsonObject event = gson.fromJson(data, JsonObject.class);
                         String eventType = event.has("type") ? event.get("type").getAsString() : "";
-                        
-                        // Capture the final response
-                        if ("response.completed".equals(eventType) || "response.done".equals(eventType)) {
+
+                        if ("response.output_item.done".equals(eventType) && event.has("item")) {
+                            outputItems.add(event.get("item").deepCopy());
+                            outputItemCount++;
+                        } else if ("response.completed".equals(eventType) || "response.done".equals(eventType)) {
                             if (event.has("response")) {
                                 finalResponse = event.getAsJsonObject("response");
                             }
+                        } else if ("response.incomplete".equals(eventType) && event.has("response")) {
+                            finalResponse = event.getAsJsonObject("response");
+                        } else if ("response.failed".equals(eventType) && event.has("response")) {
+                            finalResponse = event.getAsJsonObject("response");
                         }
                     } catch (Exception e) {
-                        // Skip malformed events
+                        Msg.debug(this, "Skipping malformed SSE event while collecting response: " + e.getMessage());
                     }
                 }
             }
         }
+
+        if (!outputItems.isEmpty()) {
+            finalResponse.add("output", outputItems);
+        }
+        if (!finalResponse.has("status")) {
+            finalResponse.addProperty("status", outputItemCount > 0 ? "completed" : "unknown");
+        }
+        Msg.info(this, "Collected OAuth Responses SSE stream: output_items=" + outputItemCount
+            + ", status=" + (finalResponse.has("status") ? finalResponse.get("status").getAsString() : "missing"));
         
         return finalResponse;
     }
@@ -738,6 +765,9 @@ public class OpenAIOAuthProvider extends APIProvider implements FunctionCallingP
         
         try {
             JsonObject payload = buildRequestPayload(messages, functions);
+            Msg.info(this, "Submitting OAuth Responses function request: input_items="
+                + payload.getAsJsonArray("input").size() + ", tools="
+                + (functions != null ? functions.size() : 0) + ", model=" + this.model);
             Headers headers = getCodexHeaders().build();
             
             Request request = new Request.Builder()
@@ -806,6 +836,9 @@ public class OpenAIOAuthProvider extends APIProvider implements FunctionCallingP
                 
                 JsonObject responseData = collectStreamingResponse(response);
                 ParsedResponse parsed = parseResponseContent(responseData);
+                ghidra.util.Msg.info(this, "OpenAI OAuth parsed function response: finish_reason="
+                    + parsed.finishReason() + ", tool_calls=" + parsed.toolCalls().size()
+                    + ", text_length=" + (parsed.textContent() != null ? parsed.textContent().length() : 0));
                 
                 // Convert to OpenAI Chat Completions format
                 JsonObject fullResponse = new JsonObject();
@@ -861,9 +894,45 @@ public class OpenAIOAuthProvider extends APIProvider implements FunctionCallingP
         // Add tools if present
         if (tools != null && !tools.isEmpty()) {
             payload.add("tools", translateToolsToFormat(tools));
+            String toolChoice = shouldForceToolChoice(messages) ? "required" : "auto";
+            payload.addProperty("tool_choice", toolChoice);
+            payload.addProperty("parallel_tool_calls", true);
+            Msg.info(this, "OAuth Responses tool_choice=" + toolChoice
+                + " for " + tools.size() + " tools");
         }
         
         return payload;
+    }
+
+    private boolean shouldForceToolChoice(List<ChatMessage> messages) {
+        if (messages == null || messages.isEmpty()) {
+            return true;
+        }
+
+        for (int i = messages.size() - 1; i >= 0; i--) {
+            ChatMessage message = messages.get(i);
+            if (message == null || message.getRole() == null) {
+                continue;
+            }
+
+            String role = message.getRole();
+            if (ChatMessage.ChatMessageRole.SYSTEM.equals(role)) {
+                continue;
+            }
+
+            // After a tool result, let the model either synthesize an answer
+            // or decide to call another tool on its own.
+            if (ChatMessage.ChatMessageRole.TOOL.equals(role)
+                    || ChatMessage.ChatMessageRole.FUNCTION.equals(role)) {
+                return false;
+            }
+
+            // On a fresh user turn, force at least one tool so the tool-capable
+            // query path does not silently degrade into plain chat.
+            return true;
+        }
+
+        return true;
     }
 
     /**

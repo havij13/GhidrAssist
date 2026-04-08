@@ -1,5 +1,6 @@
 package ghidrassist.services;
 
+import com.google.gson.JsonObject;
 import ghidrassist.AnalysisDB;
 import ghidrassist.GhidrAssistPlugin;
 import ghidrassist.LlmApi;
@@ -16,20 +17,29 @@ import ghidrassist.chat.persistence.TransactionManager;
 import ghidrassist.chat.session.ChatSession;
 import ghidrassist.chat.session.ChatSessionManager;
 import ghidrassist.chat.session.ChatSessionRepository;
+import ghidrassist.chat.transcript.TranscriptService;
 import ghidrassist.chat.util.RoleNormalizer;
+import ghidrassist.context.ContextStatus;
+import ghidrassist.context.ContextWindowListener;
+import ghidrassist.core.MarkdownHelper;
 import ghidrassist.core.QueryProcessor;
 import ghidrassist.mcp2.tools.MCPToolManager;
 import ghidrassist.tools.native_.DocumentToolProvider;
 import ghidrassist.tools.native_.NativeToolManager;
+import ghidrassist.tools.approval.ToolApprovalService;
+import ghidrassist.tools.approval.ToolRiskTier;
 import ghidrassist.tools.registry.ToolRegistry;
 import ghidrassist.graphrag.GraphRAGService;
 import ghidrassist.services.symgraph.SymGraphModels.Document;
 
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.sql.Timestamp;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Consumer;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -63,12 +73,20 @@ public class QueryService {
     private final MessageRepository messageRepository;
     private final ChatSessionRepository sessionRepository;
     private final ChatHistoryDAO chatHistoryDAO;
+    private final TranscriptService transcriptService;
+    private final ToolApprovalService toolApprovalService;
+    private final MarkdownHelper markdownHelper;
     private NativeToolManager nativeToolManager;
+    private volatile ContextUsageSnapshot contextUsageSnapshot = ContextUsageSnapshot.empty();
+    private volatile Consumer<String> contextStatusConsumer;
+    private volatile Consumer<PendingApprovalView> pendingApprovalConsumer;
+    private volatile Consumer<Integer> transcriptUpdateConsumer;
 
     public QueryService(GhidrAssistPlugin plugin) {
         this.plugin = plugin;
         this.analysisDB = new AnalysisDB();
         this.analysisDataService = new AnalysisDataService(plugin);
+        this.markdownHelper = new MarkdownHelper();
 
         // Initialize tool registry with native tools
         this.toolRegistry = new ToolRegistry();
@@ -88,6 +106,15 @@ public class QueryService {
         this.messageRepository = dao;
         this.sessionRepository = dao;
         this.sessionManager = new ChatSessionManager(sessionRepository, messageRepository, messageStore);
+        this.transcriptService = new TranscriptService(analysisDB.getConnection(), resolveArtifactRoot());
+        this.transcriptService.setSessionUpdateListener(this::notifyTranscriptUpdated);
+        this.toolApprovalService = new ToolApprovalService(analysisDB.getConnection(), transcriptService);
+        this.toolApprovalService.setStateListener(this::notifyPendingApprovalChanged);
+        this.toolRegistry.setExecutionObserver(transcriptService);
+        this.toolRegistry.setApprovalService(toolApprovalService);
+        this.toolRegistry.setActiveSessionSupplier(sessionManager::getCurrentSessionId);
+        this.toolRegistry.setProgramHashSupplier(this::getProgramHash);
+        resetContextUsage(null, null);
     }
 
     // ==================== Query Request Creation ====================
@@ -191,6 +218,8 @@ public class QueryService {
      * Execute a query request with provided LlmApi instance
      */
     public void executeQuery(QueryRequest request, LlmApi llmApi, LlmApi.LlmResponseHandler handler) throws Exception {
+        attachContextWindowTracking(llmApi);
+
         if (request.shouldUseMCP()) {
             try {
                 MCPToolManager toolManager = MCPToolManager.getInstance();
@@ -277,15 +306,25 @@ public class QueryService {
                 existingHistory = new ArrayList<>(fullHistory.subList(0, fullHistory.size() - 1));
             }
 
-            // Use history-aware method to preserve thinking data across turns
-            llmApi.sendConversationalToolRequestWithHistory(
-                existingHistory,
-                request.getProcessedQuery(),
-                nativeFunctions,
-                handler,
-                maxToolRounds,
-                toolRegistry
-            );
+            if (existingHistory.isEmpty()) {
+                llmApi.sendConversationalToolRequest(
+                    request.getProcessedQuery(),
+                    nativeFunctions,
+                    handler,
+                    maxToolRounds,
+                    toolRegistry
+                );
+            } else {
+                // Use history-aware method to preserve thinking data across turns
+                llmApi.sendConversationalToolRequestWithHistory(
+                    existingHistory,
+                    request.getProcessedQuery(),
+                    nativeFunctions,
+                    handler,
+                    maxToolRounds,
+                    toolRegistry
+                );
+            }
         } else {
             // No native tools available, fall back to regular query
             executeRegularQuery(request, llmApi, handler);
@@ -331,15 +370,25 @@ public class QueryService {
                 existingHistory = new ArrayList<>(fullHistory.subList(0, fullHistory.size() - 1));
             }
 
-            // Use history-aware method to preserve thinking data across turns
-            llmApi.sendConversationalToolRequestWithHistory(
-                existingHistory,
-                request.getProcessedQuery(),
-                allFunctions,
-                handler,
-                maxToolRounds,
-                toolRegistry
-            );
+            if (existingHistory.isEmpty()) {
+                llmApi.sendConversationalToolRequest(
+                    request.getProcessedQuery(),
+                    allFunctions,
+                    handler,
+                    maxToolRounds,
+                    toolRegistry
+                );
+            } else {
+                // Use history-aware method to preserve thinking data across turns
+                llmApi.sendConversationalToolRequestWithHistory(
+                    existingHistory,
+                    request.getProcessedQuery(),
+                    allFunctions,
+                    handler,
+                    maxToolRounds,
+                    toolRegistry
+                );
+            }
         } else {
             executeRegularQuery(request, llmApi, handler);
         }
@@ -372,7 +421,16 @@ public class QueryService {
             if (sessionId != ChatSessionManager.NO_SESSION) {
                 PersistedChatMessage msg = getLastMessage();
                 if (msg != null) {
-                    messageRepository.saveMessage(programHash, sessionId, msg);
+                    ghidra.util.Msg.info(this, "Persisting user message to session " + sessionId
+                        + " (chars=" + msg.getContent().length() + ")");
+                    int messageId = messageRepository.saveMessage(programHash, sessionId, msg);
+                    if (messageId > 0) {
+                        msg.setDbId(messageId);
+                    }
+                    transcriptService.appendUserMessage(sessionId, programHash, msg.getContent(), msg.getTimestamp(),
+                        msg.getDbId(), msg.getOrder());
+                } else {
+                    ghidra.util.Msg.warn(this, "User message store was empty after ensuring session " + sessionId);
                 }
             }
         }
@@ -397,7 +455,12 @@ public class QueryService {
         if (programHash != null && sessionId != ChatSessionManager.NO_SESSION) {
             PersistedChatMessage msg = getLastMessage();
             if (msg != null) {
-                messageRepository.saveMessage(programHash, sessionId, msg);
+                int messageId = messageRepository.saveMessage(programHash, sessionId, msg);
+                if (messageId > 0) {
+                    msg.setDbId(messageId);
+                }
+                transcriptService.appendAssistantMessage(sessionId, programHash, msg.getContent(), msg.getTimestamp(),
+                    msg.getDbId(), msg.getOrder());
             }
         }
     }
@@ -415,6 +478,8 @@ public class QueryService {
             PersistedChatMessage msg = getLastMessage();
             if (msg != null) {
                 messageRepository.saveMessage(programHash, sessionId, msg);
+                transcriptService.appendSystemNotice(sessionId, programHash,
+                    "Legacy tool message: " + toolName, msg.getContent());
             }
         }
     }
@@ -432,6 +497,7 @@ public class QueryService {
             PersistedChatMessage msg = getLastMessage();
             if (msg != null) {
                 messageRepository.saveMessage(programHash, sessionId, msg);
+                transcriptService.appendSystemNotice(sessionId, programHash, "Error", msg.getContent());
             }
         }
     }
@@ -445,11 +511,80 @@ public class QueryService {
         return messageStore.getFormattedConversation();
     }
 
+    public String getConversationDisplayHtml() {
+        int sessionId = sessionManager.getCurrentSessionId();
+        if (sessionId == ChatSessionManager.NO_SESSION) {
+            return "";
+        }
+        if (isCurrentSessionEditable()) {
+            return markdownHelper.markdownToHtml(getConversationHistory());
+        }
+        ensureTranscriptForCurrentSession();
+        return transcriptService.renderSessionHtml(sessionId);
+    }
+
+    public String getConversationPrefixHtml() {
+        int sessionId = sessionManager.getCurrentSessionId();
+        if (sessionId == ChatSessionManager.NO_SESSION) {
+            return "";
+        }
+        if (isCurrentSessionEditable()) {
+            return markdownHelper.markdownToHtmlFragment(getConversationHistory());
+        }
+        ensureTranscriptForCurrentSession();
+        return transcriptService.renderSessionHtmlFragment(sessionId);
+    }
+
+    public void setContextStatusConsumer(Consumer<String> contextStatusConsumer) {
+        this.contextStatusConsumer = contextStatusConsumer;
+    }
+
+    public void setPendingApprovalConsumer(Consumer<PendingApprovalView> pendingApprovalConsumer) {
+        this.pendingApprovalConsumer = pendingApprovalConsumer;
+    }
+
+    public void setTranscriptUpdateConsumer(Consumer<Integer> transcriptUpdateConsumer) {
+        this.transcriptUpdateConsumer = transcriptUpdateConsumer;
+    }
+
+    public String getContextStatusText() {
+        ContextUsageSnapshot snapshot = contextUsageSnapshot;
+        if (snapshot.providerName == null || snapshot.providerName.isBlank()
+                || snapshot.modelName == null || snapshot.modelName.isBlank()) {
+            ProviderIdentity identity = resolveCurrentProviderIdentity();
+            snapshot = snapshot.withProvider(identity.providerName(), identity.modelName());
+        }
+        return snapshot.toDisplayString();
+    }
+
+    public PendingApprovalView getCurrentPendingApprovalView() {
+        ToolApprovalService.PendingApproval pending =
+            toolApprovalService.getFirstPendingApprovalForSession(sessionManager.getCurrentSessionId());
+        if (pending == null) {
+            return null;
+        }
+        String argsPreview = pending.getArgs() != null ? pending.getArgs().toString() : "{}";
+        return new PendingApprovalView(
+            pending.getRequestId(),
+            pending.getToolName(),
+            pending.getToolSource(),
+            pending.getRiskTier(),
+            argsPreview
+        );
+    }
+
+    public boolean resolvePendingApproval(String requestId, String decision) {
+        return toolApprovalService.resolvePendingApproval(requestId, decision);
+    }
+
     /**
      * Clear conversation history
      */
     public void clearConversationHistory() {
+        toolApprovalService.cancelPendingApprovalsForSession(sessionManager.getCurrentSessionId(), "session cleared");
         messageStore.clear();
+        resetContextUsage(null, null);
+        notifyPendingApprovalChanged();
     }
 
     /**
@@ -512,6 +647,8 @@ public class QueryService {
         if (programHash == null) {
             return -1;
         }
+        resetContextUsage(null, null);
+        notifyPendingApprovalChanged();
         return sessionManager.createNewSession(programHash);
     }
 
@@ -553,7 +690,13 @@ public class QueryService {
             return switchToReActSession(programHash, sessionId);
         }
 
-        return sessionManager.switchToSession(programHash, sessionId);
+        boolean switched = sessionManager.switchToSession(programHash, sessionId);
+        if (switched) {
+            transcriptService.ensureBackfilledFromMessages(programHash, sessionId, messageStore.getMessages());
+            resetContextUsage(null, null);
+            notifyPendingApprovalChanged();
+        }
+        return switched;
     }
 
     private boolean switchToReActSession(String programHash, int sessionId) {
@@ -562,6 +705,7 @@ public class QueryService {
 
         if (messages != null && !messages.isEmpty()) {
             messageStore.clear();
+            transcriptService.ensureBackfilledFromReActMessages(programHash, sessionId, messages);
 
             // Format and set as single message for display
             String formattedConversation = formatReActConversation(messages, sessionId);
@@ -575,15 +719,24 @@ public class QueryService {
 
             // Set the session ID so Edit and other operations work
             sessionManager.setCurrentSessionId(sessionId);
+            resetContextUsage(null, null);
+            notifyPendingApprovalChanged();
             return true;
         }
         return false;
+    }
+
+    public boolean isCurrentSessionEditable() {
+        return isSessionEditable(sessionManager.getCurrentSessionId());
     }
 
     /**
      * Delete current chat session
      */
     public boolean deleteCurrentSession() {
+        toolApprovalService.cancelPendingApprovalsForSession(sessionManager.getCurrentSessionId(), "session deleted");
+        resetContextUsage(null, null);
+        notifyPendingApprovalChanged();
         return sessionManager.deleteCurrentSession();
     }
 
@@ -591,6 +744,11 @@ public class QueryService {
      * Delete a specific chat session by ID
      */
     public boolean deleteSession(int sessionId) {
+        if (sessionId == sessionManager.getCurrentSessionId()) {
+            toolApprovalService.cancelPendingApprovalsForSession(sessionId, "session deleted");
+            resetContextUsage(null, null);
+            notifyPendingApprovalChanged();
+        }
         return sessionManager.deleteSession(sessionId);
     }
 
@@ -829,12 +987,14 @@ public class QueryService {
         List<PersistedChatMessage> dbMessages = messageRepository.loadMessages(programHash, sessionId);
         if (!dbMessages.isEmpty()) {
             messageStore.setMessages(dbMessages);
+            transcriptService.ensureBackfilledFromMessages(programHash, sessionId, dbMessages);
         } else {
             // Fall back to legacy blob and migrate
             String conversation = sessionRepository.getLegacyConversation(sessionId);
             if (conversation != null && !conversation.isEmpty()) {
                 List<PersistedChatMessage> migrated = migrateFromLegacyBlob(conversation);
                 messageStore.setMessages(migrated);
+                transcriptService.ensureBackfilledFromMessages(programHash, sessionId, migrated);
 
                 // Save migrated messages
                 for (PersistedChatMessage msg : migrated) {
@@ -868,6 +1028,8 @@ public class QueryService {
             new ghidrassist.apiprovider.ChatMessage("user", userQuery);
         analysisDB.saveReActMessage(programHash, sessionId, messageOrder++,
             "planning", null, userMsg);
+        transcriptService.appendUserMessage(sessionId, programHash, userQuery,
+            new Timestamp(System.currentTimeMillis()));
 
         // Save investigation history
         if (investigationHistory != null && !investigationHistory.isEmpty()) {
@@ -875,6 +1037,8 @@ public class QueryService {
                 new ghidrassist.apiprovider.ChatMessage("assistant", investigationHistory);
             analysisDB.saveReActMessage(programHash, sessionId, messageOrder++,
                 "investigation", iterationNumber, investigationMsg);
+            transcriptService.appendAssistantMessage(sessionId, programHash, investigationHistory,
+                new Timestamp(System.currentTimeMillis()));
 
             analysisDB.saveReActIterationChunk(programHash, sessionId, iterationNumber,
                 investigationHistory, messageOrder - 1, messageOrder - 1);
@@ -885,6 +1049,8 @@ public class QueryService {
             new ghidrassist.apiprovider.ChatMessage("assistant", finalResult);
         analysisDB.saveReActMessage(programHash, sessionId, messageOrder++,
             "synthesis", null, finalMsg);
+        transcriptService.appendAssistantMessage(sessionId, programHash, finalResult,
+            new Timestamp(System.currentTimeMillis()));
     }
 
     private String formatReActConversation(java.util.List<ghidrassist.apiprovider.ChatMessage> messages,
@@ -967,6 +1133,7 @@ public class QueryService {
         metadata.setLastSyncedAt(System.currentTimeMillis());
         metadata.setSourceSha256(programHash);
         chatHistoryDAO.upsertDocumentChatMetadata(sessionId, metadata);
+        transcriptService.appendDocumentSnapshot(sessionId, programHash, title, content != null ? content : "");
 
         if (sessionManager.getCurrentSessionId() == sessionId) {
             messageStore.setMessages(messages);
@@ -1043,6 +1210,41 @@ public class QueryService {
         return !CHAT_TYPE_CHAT.equals(normalizeStoredChatType(chatType));
     }
 
+    private boolean isSessionEditable(int sessionId) {
+        if (sessionId == ChatSessionManager.NO_SESSION || analysisDB.isReActSession(sessionId)) {
+            return false;
+        }
+        DocumentChatMetadata metadata = chatHistoryDAO.getDocumentChatMetadata(sessionId);
+        return isDocumentType(resolveChatType(metadata));
+    }
+
+    private void ensureTranscriptForCurrentSession() {
+        int sessionId = sessionManager.getCurrentSessionId();
+        String programHash = getProgramHash();
+        if (sessionId == ChatSessionManager.NO_SESSION || programHash == null) {
+            return;
+        }
+        if (analysisDB.isReActSession(sessionId)) {
+            transcriptService.ensureBackfilledFromReActMessages(programHash, sessionId,
+                analysisDB.getReActMessages(programHash, sessionId));
+        } else {
+            transcriptService.ensureBackfilledFromMessages(programHash, sessionId, messageStore.getMessages());
+        }
+    }
+
+    private Path resolveArtifactRoot() {
+        String databasePath = analysisDB.getDatabasePath();
+        if (databasePath == null || databasePath.isBlank()) {
+            return Paths.get("ghidrassist_chat_artifacts").toAbsolutePath();
+        }
+        Path dbPath = Paths.get(databasePath).toAbsolutePath();
+        Path parent = dbPath.getParent();
+        if (parent == null) {
+            parent = Paths.get(".").toAbsolutePath();
+        }
+        return parent.resolve("ghidrassist_chat_artifacts");
+    }
+
     private PersistedChatMessage getLastMessage() {
         List<PersistedChatMessage> messages = messageStore.getMessages();
         if (!messages.isEmpty()) {
@@ -1056,6 +1258,253 @@ public class QueryService {
      */
     public AnalysisDB getAnalysisDB() {
         return analysisDB;
+    }
+
+    public TranscriptService getTranscriptService() {
+        return transcriptService;
+    }
+
+    public void toggleToolGroupExpansion(String correlationId) {
+        transcriptService.toggleToolGroupExpansion(correlationId);
+    }
+
+    public ToolApprovalService getToolApprovalService() {
+        return toolApprovalService;
+    }
+
+    public void attachContextWindowTracking(LlmApi llmApi) {
+        if (llmApi == null) {
+            resetContextUsage(null, null);
+            return;
+        }
+        String providerName = llmApi.getProviderName();
+        String modelName = llmApi.getProviderModel();
+        resetContextUsage(providerName, modelName);
+        llmApi.setContextWindowListener(createContextWindowListener(providerName, modelName));
+    }
+
+    public void beginContextTracking(String providerName, String modelName) {
+        resetContextUsage(providerName, modelName);
+    }
+
+    public ContextWindowListener createContextWindowListener(String providerName, String modelName) {
+        return new ContextWindowListener() {
+            @Override
+            public void onStatusUpdated(ContextStatus status) {
+                contextUsageSnapshot = ContextUsageSnapshot.fromStatus(providerName, modelName, status,
+                    contextUsageSnapshot.compacted);
+                notifyContextStatusChanged();
+            }
+
+            @Override
+            public void onContextCompacted(String summary, int originalMessageCount, int finalMessageCount) {
+                contextUsageSnapshot = contextUsageSnapshot.withCompacted(summary, finalMessageCount);
+                int sessionId = sessionManager.getCurrentSessionId();
+                String programHash = getProgramHash();
+                if (sessionId != ChatSessionManager.NO_SESSION && programHash != null) {
+                    JsonObject metadata = new JsonObject();
+                    metadata.addProperty("provider", providerName);
+                    metadata.addProperty("model", modelName);
+                    metadata.addProperty("original_message_count", originalMessageCount);
+                    metadata.addProperty("final_message_count", finalMessageCount);
+                    if (contextUsageSnapshot.currentTokens != null) {
+                        metadata.addProperty("current_tokens", contextUsageSnapshot.currentTokens);
+                    }
+                    if (contextUsageSnapshot.maxTokens != null) {
+                        metadata.addProperty("max_tokens", contextUsageSnapshot.maxTokens);
+                    }
+                    if (contextUsageSnapshot.thresholdTokens != null) {
+                        metadata.addProperty("threshold_tokens", contextUsageSnapshot.thresholdTokens);
+                    }
+                    transcriptService.appendContextCompacted(sessionId, programHash, summary, metadata.toString());
+                }
+                notifyContextStatusChanged();
+            }
+        };
+    }
+
+    private void resetContextUsage(String providerName, String modelName) {
+        ProviderIdentity identity = resolveCurrentProviderIdentity();
+        String resolvedProvider = firstNonBlank(providerName, identity.providerName());
+        String resolvedModel = firstNonBlank(modelName, identity.modelName());
+        contextUsageSnapshot = ContextUsageSnapshot.empty(resolvedProvider, resolvedModel);
+        notifyContextStatusChanged();
+    }
+
+    private ProviderIdentity resolveCurrentProviderIdentity() {
+        try {
+            APIProviderConfig config = GhidrAssistPlugin.getCurrentProviderConfig();
+            if (config == null) {
+                return ProviderIdentity.EMPTY;
+            }
+            return new ProviderIdentity(
+                firstNonBlank(config.getName(), "No provider"),
+                firstNonBlank(config.getModel(), "No model")
+            );
+        } catch (Exception e) {
+            ghidra.util.Msg.debug(this, "Unable to resolve current provider identity: " + e.getMessage());
+            return ProviderIdentity.EMPTY;
+        }
+    }
+
+    private String firstNonBlank(String primary, String fallback) {
+        return primary != null && !primary.isBlank() ? primary : fallback;
+    }
+
+    private void notifyContextStatusChanged() {
+        Consumer<String> consumer = contextStatusConsumer;
+        if (consumer != null) {
+            consumer.accept(getContextStatusText());
+        }
+    }
+
+    private void notifyPendingApprovalChanged() {
+        Consumer<PendingApprovalView> consumer = pendingApprovalConsumer;
+        if (consumer != null) {
+            consumer.accept(getCurrentPendingApprovalView());
+        }
+    }
+
+    private void notifyTranscriptUpdated(int sessionId) {
+        Consumer<Integer> consumer = transcriptUpdateConsumer;
+        if (consumer != null) {
+            consumer.accept(sessionId);
+        }
+    }
+
+    private static class ContextUsageSnapshot {
+        private final String providerName;
+        private final String modelName;
+        private final Integer currentTokens;
+        private final Integer maxTokens;
+        private final Integer messageCount;
+        private final Integer thresholdTokens;
+        private final boolean compacted;
+        private final String note;
+
+        private ContextUsageSnapshot(String providerName, String modelName, Integer currentTokens,
+                                     Integer maxTokens, Integer messageCount, Integer thresholdTokens,
+                                     boolean compacted, String note) {
+            this.providerName = providerName;
+            this.modelName = modelName;
+            this.currentTokens = currentTokens;
+            this.maxTokens = maxTokens;
+            this.messageCount = messageCount;
+            this.thresholdTokens = thresholdTokens;
+            this.compacted = compacted;
+            this.note = note;
+        }
+
+        private static ContextUsageSnapshot empty() {
+            return empty(null, null);
+        }
+
+        private static ContextUsageSnapshot empty(String providerName, String modelName) {
+            return new ContextUsageSnapshot(providerName, modelName, null, null, null, null,
+                false, "No active context window data");
+        }
+
+        private static ContextUsageSnapshot fromStatus(String providerName, String modelName,
+                                                       ContextStatus status, boolean compacted) {
+            return new ContextUsageSnapshot(
+                providerName,
+                modelName,
+                status != null ? status.getCurrentTokens() : null,
+                status != null ? status.getMaxTokens() : null,
+                status != null ? status.getMessageCount() : null,
+                status != null ? status.getCompressionThresholdTokens() : null,
+                compacted,
+                status != null ? status.getStatusMessage() : "No active context window data"
+            );
+        }
+
+        private ContextUsageSnapshot withCompacted(String note, Integer finalMessageCount) {
+            return new ContextUsageSnapshot(
+                providerName,
+                modelName,
+                currentTokens,
+                maxTokens,
+                finalMessageCount != null ? finalMessageCount : messageCount,
+                thresholdTokens,
+                true,
+                note
+            );
+        }
+
+        private ContextUsageSnapshot withProvider(String providerName, String modelName) {
+            return new ContextUsageSnapshot(
+                providerName != null && !providerName.isBlank() ? providerName : this.providerName,
+                modelName != null && !modelName.isBlank() ? modelName : this.modelName,
+                currentTokens,
+                maxTokens,
+                messageCount,
+                thresholdTokens,
+                compacted,
+                note
+            );
+        }
+
+        private String toDisplayString() {
+            String provider = providerName != null && !providerName.isBlank() ? providerName : "No provider";
+            String model = modelName != null && !modelName.isBlank() ? modelName : "No model";
+            if (currentTokens == null || maxTokens == null) {
+                return String.format("Model: %s / %s | %s", provider, model, note);
+            }
+            String compactedLabel = compacted ? " | compacted" : "";
+            String messageLabel = messageCount != null ? " | " + messageCount + " msgs" : "";
+            String thresholdLabel = thresholdTokens != null ? " | threshold " + thresholdTokens : "";
+            return String.format(
+                "Model: %s / %s | context %d/%d tokens%s%s%s",
+                provider,
+                model,
+                currentTokens,
+                maxTokens,
+                messageLabel,
+                thresholdLabel,
+                compactedLabel
+            );
+        }
+    }
+
+    private record ProviderIdentity(String providerName, String modelName) {
+        private static final ProviderIdentity EMPTY = new ProviderIdentity(null, null);
+    }
+
+    public static class PendingApprovalView {
+        private final String requestId;
+        private final String toolName;
+        private final String toolSource;
+        private final ToolRiskTier riskTier;
+        private final String argsPreview;
+
+        public PendingApprovalView(String requestId, String toolName, String toolSource,
+                                   ToolRiskTier riskTier, String argsPreview) {
+            this.requestId = requestId;
+            this.toolName = toolName;
+            this.toolSource = toolSource;
+            this.riskTier = riskTier;
+            this.argsPreview = argsPreview;
+        }
+
+        public String getRequestId() {
+            return requestId;
+        }
+
+        public String getToolName() {
+            return toolName;
+        }
+
+        public String getToolSource() {
+            return toolSource;
+        }
+
+        public ToolRiskTier getRiskTier() {
+            return riskTier;
+        }
+
+        public String getArgsPreview() {
+            return argsPreview;
+        }
     }
 
     // ==================== Query Request ====================

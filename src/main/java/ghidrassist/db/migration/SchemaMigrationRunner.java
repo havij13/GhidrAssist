@@ -42,6 +42,9 @@ public class SchemaMigrationRunner {
         migrations.add(new V8_DocumentChatMetadata());
         migrations.add(new V9_FunctionCodeFields());
         migrations.add(new V10_GraphNodeCategory());
+        migrations.add(new V11_TranscriptAndApprovalSchema());
+        migrations.add(new V12_TranscriptMessageLinkage());
+        migrations.add(new V13_TranscriptConversationDedup());
 
         // Sort by version number to ensure correct order
         migrations.sort(Comparator.comparingInt(SchemaMigration::getVersion));

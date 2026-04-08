@@ -173,6 +173,32 @@ public class TabController {
     public void setExplainTab(ExplainTab tab) { this.explainTab = tab; }
     public void setQueryTab(QueryTab tab) {
         this.queryTab = tab;
+        queryService.setContextStatusConsumer(status -> {
+            if (this.queryTab != null) {
+                SwingUtilities.invokeLater(() -> this.queryTab.setContextStatus(status));
+            }
+        });
+        queryService.setPendingApprovalConsumer(pendingApproval -> {
+            if (this.queryTab != null) {
+                SwingUtilities.invokeLater(() -> this.queryTab.setPendingApproval(pendingApproval));
+            }
+        });
+        queryService.setTranscriptUpdateConsumer(sessionId -> {
+            if (this.queryTab == null || sessionId != queryService.getCurrentSessionId()) {
+                return;
+            }
+            SwingUtilities.invokeLater(() -> {
+                if (currentStreamingRenderer != null) {
+                    queryTab.updateStreamingPrefix(queryService.getConversationPrefixHtml());
+                } else {
+                    renderCurrentChatSession();
+                }
+            });
+        });
+        if (this.queryTab != null) {
+            this.queryTab.setContextStatus(queryService.getContextStatusText());
+            this.queryTab.setPendingApproval(queryService.getCurrentPendingApprovalView());
+        }
     }
     public void setActionsTab(ActionsTab tab) { this.actionsTab = tab; }
     public void setRAGManagementTab(RAGManagementTab tab) { this.ragManagementTab = tab; }
@@ -922,6 +948,17 @@ public class TabController {
                 }
                 return sessionId;
             });
+            currentOrchestrator.setToolExecutionObserver(queryService.getTranscriptService());
+            currentOrchestrator.setToolApprovalService(queryService.getToolApprovalService());
+            currentOrchestrator.setActiveSessionId(queryService.getCurrentSessionId());
+            currentOrchestrator.setProgramHashSupplier(this::getProgramHash);
+            APIProviderConfig providerConfig = ghidrassist.GhidrAssistPlugin.getCurrentProviderConfig();
+            if (providerConfig != null) {
+                queryService.beginContextTracking(providerConfig.getName(), providerConfig.getModel());
+                currentOrchestrator.setContextWindowListener(
+                    queryService.createContextWindowListener(providerConfig.getName(), providerConfig.getModel())
+                );
+            }
 
             // Create progress handler for UI updates with todos and findings support
             ghidrassist.agent.react.ReActProgressHandler progressHandler =
@@ -951,9 +988,7 @@ public class TabController {
                     result.getAnswer()
                 );
 
-                // Show in UI - display the full chronological history
-                String html = markdownHelper.markdownToHtml(historyContainer[0].toString());
-                queryTab.setResponseText(html);
+                renderCurrentChatSession();
 
                 // Clear the orchestrator reference
                 currentOrchestrator = null;
@@ -985,9 +1020,7 @@ public class TabController {
                         isCancellation ? "[Cancelled]" : "[Error: " + errorMsg + "]"
                     );
 
-                    // Show partial progress in UI
-                    String html = markdownHelper.markdownToHtml(partialHistory + suffix);
-                    queryTab.setResponseText(html);
+                    renderCurrentChatSession();
 
                     // Refresh chat history to show the saved session
                     refreshChatHistory();
@@ -1228,6 +1261,17 @@ public class TabController {
     }
 
     // ==== Feedback Operations ====
+
+    public void handleApprovalDecision(String requestId, String decision) {
+        if (requestId == null || requestId.isBlank()) {
+            return;
+        }
+        boolean resolved = queryService.resolvePendingApproval(requestId, decision);
+        if (!resolved) {
+            Msg.showInfo(getClass(), null, "Approval",
+                "That approval request is no longer pending.");
+        }
+    }
     
     public void handleHyperlinkEvent(HyperlinkEvent e) {
         if (e.getEventType() == HyperlinkEvent.EventType.ACTIVATED) {
@@ -1249,6 +1293,14 @@ public class TabController {
                 } else if (desc.equals("thumbsdown")) {
                     feedbackService.storeNegativeFeedback();
                     Msg.showInfo(getClass(), null, "Feedback", "Thank you for your feedback!");
+                } else if (desc.startsWith("tool-expand:") || desc.startsWith("tool-collapse:")) {
+                    String correlationId = desc.substring(desc.indexOf(':') + 1);
+                    queryService.toggleToolGroupExpansion(correlationId);
+                    if (currentStreamingRenderer != null && queryTab != null) {
+                        queryTab.updateStreamingPrefix(queryService.getConversationPrefixHtml());
+                    } else {
+                        renderCurrentChatSession();
+                    }
                 }
             } catch (IllegalStateException ex) {
                 Msg.showInfo(getClass(), null, "Feedback", ex.getMessage());
@@ -1409,6 +1461,7 @@ public class TabController {
             // Clear current conversation and create new session immediately
             queryService.clearConversationHistory();
             queryTab.setResponseText("");
+            queryTab.setEditEnabled(false);
             queryTab.clearChatSelection();
             
             // Create new session immediately instead of waiting for first query
@@ -1464,11 +1517,13 @@ public class TabController {
         SwingUtilities.invokeLater(() -> {
             if (anyDeleted) {
                 queryTab.setResponseText("");
+                queryTab.setEditEnabled(false);
                 queryTab.clearChatSelection();
                 refreshChatHistory();
             } else {
                 // If no session to delete, just clear the UI
                 queryTab.setResponseText("");
+                queryTab.setEditEnabled(false);
                 queryService.clearConversationHistory();
             }
         });
@@ -1482,10 +1537,7 @@ public class TabController {
             
             if (success) {
                 SwingUtilities.invokeLater(() -> {
-                    String conversationHistory = queryService.getConversationHistory();
-                    String html = markdownHelper.markdownToHtml(conversationHistory);
-                    queryTab.setResponseText(html);
-                    queryTab.setMarkdownSource(conversationHistory);
+                    renderCurrentChatSession();
                 });
             }
         }
@@ -1532,6 +1584,11 @@ public class TabController {
         if (currentSessionId == -1) {
             Msg.showInfo(this, queryTab, "No Chat",
                     "No active chat session to edit.");
+            return false;
+        }
+        if (!queryService.isCurrentSessionEditable()) {
+            Msg.showInfo(this, queryTab, "Read-only Transcript",
+                    "Structured chat transcripts are append-only. Use a Notes or document chat to edit content.");
             return false;
         }
 
@@ -1689,13 +1746,7 @@ public class TabController {
             return;
         }
 
-        // Get updated conversation history
-        String conversationHistory = queryService.getConversationHistory();
-
-        // Convert to HTML and display
-        String html = markdownHelper.markdownToHtml(conversationHistory);
-        queryTab.setResponseText(html);
-        queryTab.setMarkdownSource(conversationHistory);
+        renderCurrentChatSession();
     }
 
     /**
@@ -1706,6 +1757,31 @@ public class TabController {
             return plugin.getCurrentProgram().getExecutableSHA256();
         }
         return null;
+    }
+
+    private void renderCurrentChatSession() {
+        if (queryTab == null) {
+            return;
+        }
+        queryTab.setResponseText(queryService.getConversationDisplayHtml());
+        queryTab.setMarkdownSource(queryService.getConversationHistory());
+        queryTab.setEditEnabled(queryService.isCurrentSessionEditable());
+        queryTab.setContextStatus(queryService.getContextStatusText());
+    }
+
+    private String sanitizeAssistantResponseForTranscript(String rawResponse) {
+        if (rawResponse == null || rawResponse.isBlank()) {
+            return rawResponse;
+        }
+
+        String sanitized = rawResponse
+            .replace("🔄 Starting conversational tool calling (automatic retry on rate limits)...\n\n", "")
+            .replace("🔄 Continuing conversation with history...\n\n", "");
+
+        while (sanitized.startsWith("\n")) {
+            sanitized = sanitized.substring(1);
+        }
+        return sanitized;
     }
 
     private String formatIndexedTimestamp(Long epochMs) {
@@ -1945,8 +2021,7 @@ public class TabController {
                 }
 
                 // Render existing conversation history as prefix
-                String existingHtml = markdownHelper.markdownToHtmlFragment(
-                    queryService.getConversationHistory());
+                String existingHtml = queryService.getConversationPrefixHtml();
 
                 // Create streaming renderer with callback to update UI
                 // Note: StreamingMarkdownRenderer already calls invokeLater, so callback runs on EDT
@@ -1999,7 +2074,7 @@ public class TabController {
                         responseBuffer.append(fullResponse);
                     }
 
-                    final String finalResponse = responseBuffer.toString();
+                    final String finalResponse = sanitizeAssistantResponseForTranscript(responseBuffer.toString());
 
                     // Signal stream complete to renderer
                     if (currentStreamingRenderer != null) {
@@ -2009,13 +2084,13 @@ public class TabController {
 
                     SwingUtilities.invokeLater(() -> {
                         feedbackService.cacheLastInteraction(feedbackService.getLastPrompt(), finalResponse);
-                        queryService.addAssistantResponse(finalResponse);
+                        if (finalResponse != null && !finalResponse.isBlank()) {
+                            queryService.addAssistantResponse(finalResponse);
+                        } else {
+                            queryService.addError("Model returned no text or tool calls. Check the Ghidra log for provider diagnostics.");
+                        }
 
-                        // Final markdown rendering
-                        String conversationHistory = queryService.getConversationHistory();
-                        String html = markdownHelper.markdownToHtml(conversationHistory);
-                        queryTab.setResponseText(html);
-                        queryTab.setMarkdownSource(conversationHistory);
+                        renderCurrentChatSession();
                         setUIState(false, "Submit", null);
                         currentLlmApi = null;
 
@@ -2037,7 +2112,8 @@ public class TabController {
                         final String partialResponse = responseBuffer.toString();
                         SwingUtilities.invokeLater(() -> {
                             // Save partial response as assistant message before the error
-                            queryService.addAssistantMessage(partialResponse + "\n\n[Incomplete - Error occurred]",
+                            queryService.addAssistantMessage(
+                                sanitizeAssistantResponseForTranscript(partialResponse) + "\n\n[Incomplete - Error occurred]",
                                 queryService.getCurrentProviderType(), null);
                         });
                     }
@@ -2045,8 +2121,7 @@ public class TabController {
 
                 SwingUtilities.invokeLater(() -> {
                     queryService.addError(error.getMessage());
-                    String html = markdownHelper.markdownToHtml(queryService.getConversationHistory());
-                    queryTab.setResponseText(html);
+                    renderCurrentChatSession();
                     setUIState(false, "Submit", null);
                     currentLlmApi = null;
                 });
@@ -2079,12 +2154,11 @@ public class TabController {
 
                         SwingUtilities.invokeLater(() -> {
                             // Save partial response
-                            queryService.addAssistantMessage(partialResponse + "\n\n[Cancelled by user]",
+                            queryService.addAssistantMessage(
+                                sanitizeAssistantResponseForTranscript(partialResponse) + "\n\n[Cancelled by user]",
                                 queryService.getCurrentProviderType(), null);
 
-                            // Update UI with saved content
-                            String html = markdownHelper.markdownToHtml(queryService.getConversationHistory());
-                            queryTab.setResponseText(html);
+                            renderCurrentChatSession();
                             setUIState(false, "Submit", null);
                             currentLlmApi = null;
 

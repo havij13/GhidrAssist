@@ -6,7 +6,10 @@ import ghidrassist.LlmApi;
 import ghidrassist.apiprovider.APIProviderConfig;
 import ghidrassist.mcp2.tools.MCPTool;
 import ghidrassist.mcp2.tools.MCPToolManager;
+import ghidrassist.context.ContextWindowListener;
+import ghidrassist.tools.approval.ToolApprovalService;
 import ghidrassist.tools.api.Tool;
+import ghidrassist.tools.api.ToolExecutionObserver;
 import ghidrassist.tools.native_.DocumentToolProvider;
 import ghidrassist.tools.native_.NativeToolManager;
 import ghidrassist.tools.registry.ToolRegistry;
@@ -156,6 +159,34 @@ public class ReActOrchestrator {
         if (toolRegistry != null) {
             toolRegistry.setContext(program);
         }
+    }
+
+    public void setToolExecutionObserver(ToolExecutionObserver observer) {
+        if (toolRegistry != null) {
+            toolRegistry.setExecutionObserver(observer);
+        }
+    }
+
+    public void setToolApprovalService(ToolApprovalService approvalService) {
+        if (toolRegistry != null) {
+            toolRegistry.setApprovalService(approvalService);
+        }
+    }
+
+    public void setActiveSessionId(int sessionId) {
+        if (toolRegistry != null) {
+            toolRegistry.setActiveSessionSupplier(() -> sessionId);
+        }
+    }
+
+    public void setProgramHashSupplier(java.util.function.Supplier<String> programHashSupplier) {
+        if (toolRegistry != null) {
+            toolRegistry.setProgramHashSupplier(programHashSupplier);
+        }
+    }
+
+    public void setContextWindowListener(ContextWindowListener listener) {
+        llmApi.setContextWindowListener(listener);
     }
 
     /**

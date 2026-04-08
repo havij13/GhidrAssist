@@ -57,19 +57,22 @@ public class MarkdownHelper {
             : darker(fg, -40);
 
         return "body { font-family: sans-serif; font-size: 10px; margin: 8px; " +
-                   "color: " + hex(fg) + "; background-color: " + hex(bg) + "; }" +
+                   "color: " + hex(fg) + "; background-color: " + hex(bg) + "; width: auto; }" +
                "pre { background-color: " + hex(codeBg) + "; padding: 10px; " +
-                   "border: 1px solid " + hex(codeBorder) + "; overflow-x: auto; " +
+                   "border: 1px solid " + hex(codeBorder) + "; white-space: pre-wrap; " +
+                   "word-wrap: break-word; overflow-wrap: anywhere; " +
                    "border-radius: 4px; }" +
                "code { background-color: " + hex(codeBg) + "; padding: 2px 5px; " +
-                   "border-radius: 3px; }" +
+                   "border-radius: 3px; word-wrap: break-word; }" +
                "table { margin: 8px 0; border-top: 1px solid " + hex(codeBorder) + "; " +
-                   "border-left: 1px solid " + hex(codeBorder) + "; }" +
+                   "border-left: 1px solid " + hex(codeBorder) + "; width: 100%; table-layout: fixed; }" +
                "th { border-bottom: 1px solid " + hex(codeBorder) + "; " +
                    "border-right: 1px solid " + hex(codeBorder) + "; padding: 4px 8px; " +
                    "font-weight: bold; background-color: " + hex(thBg) + "; }" +
                "td { border-bottom: 1px solid " + hex(codeBorder) + "; " +
-                   "border-right: 1px solid " + hex(codeBorder) + "; padding: 4px 8px; }" +
+                   "border-right: 1px solid " + hex(codeBorder) + "; padding: 4px 8px; " +
+                   "word-wrap: break-word; overflow-wrap: anywhere; vertical-align: top; }" +
+               "div, p, li, span { word-wrap: break-word; overflow-wrap: anywhere; }" +
                "blockquote { border-left: 3px solid " + hex(bqBorder) + "; margin-left: 0; " +
                    "padding-left: 12px; color: " + hex(bqText) + "; }" +
                "a { color: " + hex(isDark ? new Color(100, 160, 255) : new Color(0, 100, 200)) + "; }";

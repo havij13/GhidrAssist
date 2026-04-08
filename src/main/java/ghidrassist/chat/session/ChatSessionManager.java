@@ -67,16 +67,7 @@ public class ChatSessionManager {
      */
     public int createNewSession(String programHash) {
         synchronized (sessionLock) {
-            // Generate description based on session count
-            int nextNumber = sessionRepository.getNextSessionNumber(programHash);
-            String description = "Chat " + nextNumber;
-
-            int sessionId = sessionRepository.createSession(programHash, description);
-            if (sessionId != NO_SESSION) {
-                currentSessionId.set(sessionId);
-                messageStore.clear();
-            }
-            return sessionId;
+            return createCurrentSession(programHash, true);
         }
     }
 
@@ -285,9 +276,23 @@ public class ChatSessionManager {
     public int ensureSession(String programHash) {
         synchronized (sessionLock) {
             if (currentSessionId.get() == NO_SESSION && !messageStore.isEmpty()) {
-                return createNewSession(programHash);
+                return createCurrentSession(programHash, false);
             }
             return currentSessionId.get();
         }
+    }
+
+    private int createCurrentSession(String programHash, boolean clearMessages) {
+        int nextNumber = sessionRepository.getNextSessionNumber(programHash);
+        String description = "Chat " + nextNumber;
+
+        int sessionId = sessionRepository.createSession(programHash, description);
+        if (sessionId != NO_SESSION) {
+            currentSessionId.set(sessionId);
+            if (clearMessages) {
+                messageStore.clear();
+            }
+        }
+        return sessionId;
     }
 }

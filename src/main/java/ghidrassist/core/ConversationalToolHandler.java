@@ -135,9 +135,6 @@ public class ConversationalToolHandler {
         // Start the conversation loop
         userHandler.onStart();
 
-        // Provide user feedback about automatic rate limit handling
-        userHandler.onUpdate("🔄 Starting conversational tool calling (automatic retry on rate limits)...\n\n");
-
         continueConversation();
     }
 
@@ -193,8 +190,6 @@ public class ConversationalToolHandler {
 
         // Start the conversation loop
         userHandler.onStart();
-        userHandler.onUpdate("🔄 Continuing conversation with history...\n\n");
-
         // Validate imported history before starting - existing history may have orphaned tool_calls
         validateAndRepairConversationHistory();
 
@@ -783,12 +778,6 @@ public class ConversationalToolHandler {
      */
     private void handleToolCallsFromStream(List<AnthropicPlatformApiProvider.ToolCall> toolCalls) {
         try {
-            // Update UI with tool calling status
-            String toolExecutionHeader = "\n\n🔧 **Executing tools...**\n";
-            javax.swing.SwingUtilities.invokeLater(() -> {
-                userHandler.onUpdate(toolExecutionHeader);
-            });
-
             // Convert AnthropicPlatformApiProvider.ToolCall to JsonArray format expected by existing methods
             JsonArray toolCallsArray = new JsonArray();
             for (AnthropicPlatformApiProvider.ToolCall toolCall : toolCalls) {
@@ -823,11 +812,6 @@ public class ConversationalToolHandler {
      */
     private void handleToolCallsFromOpenAIStream(List<OpenAIPlatformApiProvider.ToolCall> toolCalls) {
         try {
-            String toolExecutionHeader = "\n\n🔧 **Executing tools...**\n";
-            javax.swing.SwingUtilities.invokeLater(() -> {
-                userHandler.onUpdate(toolExecutionHeader);
-            });
-
             JsonArray toolCallsArray = new JsonArray();
             for (OpenAIPlatformApiProvider.ToolCall toolCall : toolCalls) {
                 JsonObject toolCallObj = new JsonObject();
@@ -860,11 +844,6 @@ public class ConversationalToolHandler {
      */
     private void handleToolCallsFromLMStudioStream(List<LMStudioProvider.ToolCall> toolCalls) {
         try {
-            String toolExecutionHeader = "\n\n🔧 **Executing tools...**\n";
-            javax.swing.SwingUtilities.invokeLater(() -> {
-                userHandler.onUpdate(toolExecutionHeader);
-            });
-
             JsonArray toolCallsArray = new JsonArray();
             for (LMStudioProvider.ToolCall toolCall : toolCalls) {
                 JsonObject toolCallObj = new JsonObject();
@@ -1104,12 +1083,6 @@ public class ConversationalToolHandler {
                 }
             }
 
-            // Update UI with tool calling status
-            String toolExecutionHeader = "🔧 **Executing tools...**\n";
-            javax.swing.SwingUtilities.invokeLater(() -> {
-                userHandler.onUpdate(toolExecutionHeader);
-            });
-            
             // Execute tools and collect results
             executeToolsSequentially(toolCalls, 0, new ArrayList<>());
             
@@ -1248,13 +1221,6 @@ public class ConversationalToolHandler {
             JsonObject arguments = extractToolArguments(toolCall);
             String toolCallId = extractToolCallId(toolCall);
 
-            // Update UI with current tool execution including parameters
-            String paramDisplay = formatToolParameters(arguments);
-            String executingMessage = "🛠️ Tool call in progress: *" + toolName + "(" + paramDisplay + ")*\n";
-            javax.swing.SwingUtilities.invokeLater(() -> {
-                userHandler.onUpdate(executingMessage);
-            });
-
             // Execute via ToolRegistry with proper transaction handling
             return executeToolWithTransaction(toolName, arguments)
                 .thenApply(result -> {
@@ -1267,16 +1233,6 @@ public class ConversationalToolHandler {
                     Msg.debug(this, String.format("Tool '%s' completed: success=%s, length=%d",
                         toolName, result.isSuccess(),
                         result.getContent() != null ? result.getContent().length() : 0));
-
-                    // Don't show verbose tool results to user - they'll be included in LLM response
-                    String paramDisplayComplete = formatToolParameters(arguments);
-                    String completionMessage = "✓ Completed: *" + toolName + "(" + paramDisplayComplete + ")*\n";
-
-                    javax.swing.SwingUtilities.invokeLater(() -> {
-                        if (!isCancelled) {
-                            userHandler.onUpdate(completionMessage);
-                        }
-                    });
 
                     // Create tool result for conversation
                     JsonObject toolResult = new JsonObject();
@@ -1350,8 +1306,8 @@ public class ConversationalToolHandler {
                     content = "Tool execution completed. Continuing analysis.";
                     Msg.info(this, "LLM response had no text content after " + toolCallRound + " tool rounds");
                 } else {
-                    content = "I'm ready to help you with this function analysis.";
-                    Msg.info(this, "LLM response had no content, using default message");
+                    content = "";
+                    Msg.warn(this, "LLM response had no content and no tool calls; returning empty completion");
                 }
             }
             

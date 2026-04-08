@@ -26,6 +26,7 @@ import ghidrassist.core.streaming.RenderUpdate;
 import ghidrassist.core.streaming.StreamingScrollManager;
 import ghidrassist.mcp2.server.MCPServerRegistry;
 import ghidrassist.AnalysisDB;
+import ghidrassist.services.QueryService;
 
 public class QueryTab extends JPanel {
     private static final long serialVersionUID = 1L;
@@ -50,6 +51,14 @@ public class QueryTab extends JPanel {
     private JButton deleteButton;
     private JTable chatHistoryTable;
     private DefaultTableModel chatHistoryModel;
+    private JLabel contextStatusLabel;
+    private JPanel approvalPanel;
+    private JLabel approvalSummaryLabel;
+    private JTextArea approvalArgsArea;
+    private JButton approveOnceButton;
+    private JButton approveSessionButton;
+    private JButton denyApprovalButton;
+    private String currentPendingApprovalRequestId;
     private SimpleDateFormat dateFormat;
 
     // Edit mode components
@@ -74,6 +83,7 @@ public class QueryTab extends JPanel {
     private StringBuilder accumulatedCommittedHtml = new StringBuilder();
     private String lastPendingHtml = "<span></span>";
     private boolean documentCorrupted = false;
+    private String currentStreamingPrefixHtml = "";
     private StreamingScrollManager scrollManager;
     private JScrollPane responseScrollPane;
 
@@ -126,6 +136,19 @@ public class QueryTab extends JPanel {
         newButton = new JButton("New");
         deleteButton = new JButton("Delete");
         editSaveButton = new JButton("Edit");
+        contextStatusLabel = new JLabel("Model: No provider / No model | No active context window data");
+        contextStatusLabel.setFont(new Font("Monospaced", Font.PLAIN, 11));
+        approvalPanel = new JPanel(new BorderLayout(6, 6));
+        approvalSummaryLabel = new JLabel(" ");
+        approvalArgsArea = new JTextArea(3, 40);
+        approvalArgsArea.setEditable(false);
+        approvalArgsArea.setLineWrap(true);
+        approvalArgsArea.setWrapStyleWord(true);
+        approvalArgsArea.setFont(new Font("Monospaced", Font.PLAIN, 11));
+        approveOnceButton = new JButton("Allow Once");
+        approveSessionButton = new JButton("Allow for Session");
+        denyApprovalButton = new JButton("Deny");
+        approvalPanel.setVisible(false);
 
         // Initialize markdown edit area for edit mode
         markdownEditArea = new JTextArea();
@@ -173,11 +196,24 @@ public class QueryTab extends JPanel {
         editPanel.add(editSaveButton);
         topPanel.add(editPanel, BorderLayout.EAST);
 
+        JPanel statusPanel = new JPanel(new BorderLayout(0, 6));
+        statusPanel.add(contextStatusLabel, BorderLayout.WEST);
+        JPanel approvalButtonPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 6, 0));
+        approvalButtonPanel.add(approveOnceButton);
+        approvalButtonPanel.add(approveSessionButton);
+        approvalButtonPanel.add(denyApprovalButton);
+        approvalPanel.add(approvalSummaryLabel, BorderLayout.NORTH);
+        approvalPanel.add(new JScrollPane(approvalArgsArea), BorderLayout.CENTER);
+        approvalPanel.add(approvalButtonPanel, BorderLayout.SOUTH);
+        statusPanel.add(approvalPanel, BorderLayout.SOUTH);
+        topPanel.add(statusPanel, BorderLayout.SOUTH);
+
         add(topPanel, BorderLayout.NORTH);
 
         // Setup content panel with CardLayout (view mode + edit mode)
         responseScrollPane = new JScrollPane(responseTextPane);
         responseScrollPane.setVerticalScrollBarPolicy(JScrollPane.VERTICAL_SCROLLBAR_ALWAYS);
+        responseScrollPane.setHorizontalScrollBarPolicy(JScrollPane.HORIZONTAL_SCROLLBAR_NEVER);
         scrollManager = new StreamingScrollManager(responseScrollPane);
         JScrollPane editScrollPane = new JScrollPane(markdownEditArea);
         contentPanel.add(responseScrollPane, "view");
@@ -257,6 +293,13 @@ public class QueryTab extends JPanel {
                 isEditMode = true;
             }
         });
+
+        approveOnceButton.addActionListener(e -> controller.handleApprovalDecision(
+            currentPendingApprovalRequestId, "allow_once"));
+        approveSessionButton.addActionListener(e -> controller.handleApprovalDecision(
+            currentPendingApprovalRequestId, "allow_session"));
+        denyApprovalButton.addActionListener(e -> controller.handleApprovalDecision(
+            currentPendingApprovalRequestId, "deny"));
 
         // ESC key discards edits and returns to view mode
         markdownEditArea.getInputMap(JComponent.WHEN_FOCUSED)
@@ -392,6 +435,7 @@ public class QueryTab extends JPanel {
             accumulatedCommittedHtml.setLength(0);
             lastPendingHtml = "<span></span>";
             documentCorrupted = false;
+            currentStreamingPrefixHtml = (prefixHtml != null && !prefixHtml.isEmpty()) ? prefixHtml : "";
 
             // Switch to HTML mode
             responseTextPane.setContentType("text/html");
@@ -399,13 +443,12 @@ public class QueryTab extends JPanel {
             responseTextPane.setEditorKit(kit);
 
             // Build initial HTML with two-div structure
-            String prefix = (prefixHtml != null && !prefixHtml.isEmpty()) ? prefixHtml : "";
             String initialHtml = String.format(
                 "<html><head><style>%s</style></head><body>%s" +
                 "<div id=\"committed\"></div>" +
                 "<div id=\"pending\"><span></span></div>" +
                 "</body></html>",
-                getStreamingCSS(), prefix);
+                getStreamingCSS(), currentStreamingPrefixHtml);
 
             responseTextPane.setText(initialHtml);
             responseDocument = responseTextPane.getStyledDocument();
@@ -423,6 +466,19 @@ public class QueryTab extends JPanel {
             initializeUi.run();
         } else {
             SwingUtilities.invokeLater(initializeUi);
+        }
+    }
+
+    public void updateStreamingPrefix(String prefixHtml) {
+        Runnable updateUi = () -> {
+            currentStreamingPrefixHtml = prefixHtml != null ? prefixHtml : "";
+            rebuildDocument();
+        };
+
+        if (SwingUtilities.isEventDispatchThread()) {
+            updateUi.run();
+        } else {
+            SwingUtilities.invokeLater(updateUi);
         }
     }
 
@@ -511,6 +567,7 @@ public class QueryTab extends JPanel {
         String fullHtml = update.getFullHtml();
         if (fullHtml != null) {
             String wrapped = "<html><head><style>" + getStreamingCSS() + "</style></head><body>" +
+                    currentStreamingPrefixHtml +
                     fullHtml + "</body></html>";
             responseTextPane.setContentType("text/html");
             responseTextPane.setEditorKit(new HTMLEditorKit());
@@ -521,6 +578,7 @@ public class QueryTab extends JPanel {
 
     private void rebuildDocument() {
         String html = "<html><head><style>" + getStreamingCSS() + "</style></head><body>" +
+                currentStreamingPrefixHtml +
                 accumulatedCommittedHtml.toString() +
                 lastPendingHtml +
                 "</body></html>";
@@ -546,6 +604,7 @@ public class QueryTab extends JPanel {
         responseTextPane.setContentType("text/html");
         responseTextPane.setEditorKit(new HTMLEditorKit());
         String repairedHtml = "<html><head><style>" + getStreamingCSS() + "</style></head><body>" +
+                currentStreamingPrefixHtml +
                 "<div id=\"committed\">" + accumulatedCommittedHtml + "</div>" +
                 "<div id=\"pending\">" + lastPendingHtml + "</div>" +
                 "</body></html>";
@@ -1072,6 +1131,58 @@ public class QueryTab extends JPanel {
             contentLayout.show(contentPanel, "view");
             editSaveButton.setText("Edit");
             isEditMode = false;
+        }
+    }
+
+    public void setEditEnabled(boolean enabled) {
+        if (!enabled) {
+            exitEditMode();
+        }
+        editSaveButton.setEnabled(enabled);
+        editSaveButton.setToolTipText(enabled
+            ? "Edit document-style chats"
+            : "Structured transcripts are append-only. Use a Notes or document chat to edit content.");
+    }
+
+    public void setContextStatus(String contextStatus) {
+        String text = contextStatus != null && !contextStatus.isBlank()
+            ? contextStatus
+            : "Model: No provider / No model | No active context window data";
+        if (SwingUtilities.isEventDispatchThread()) {
+            contextStatusLabel.setText(text);
+        } else {
+            SwingUtilities.invokeLater(() -> contextStatusLabel.setText(text));
+        }
+    }
+
+    public void setPendingApproval(QueryService.PendingApprovalView pendingApproval) {
+        Runnable updateUi = () -> {
+            currentPendingApprovalRequestId = pendingApproval != null ? pendingApproval.getRequestId() : null;
+            if (pendingApproval == null) {
+                approvalPanel.setVisible(false);
+                approvalSummaryLabel.setText(" ");
+                approvalArgsArea.setText("");
+                approvalPanel.revalidate();
+                approvalPanel.repaint();
+                return;
+            }
+
+            approvalSummaryLabel.setText(String.format(
+                "Approval required: %s [%s] from %s",
+                pendingApproval.getToolName(),
+                pendingApproval.getRiskTier().name().toLowerCase(),
+                pendingApproval.getToolSource()
+            ));
+            approvalArgsArea.setText(pendingApproval.getArgsPreview());
+            approvalPanel.setVisible(true);
+            approvalPanel.revalidate();
+            approvalPanel.repaint();
+        };
+
+        if (SwingUtilities.isEventDispatchThread()) {
+            updateUi.run();
+        } else {
+            SwingUtilities.invokeLater(updateUi);
         }
     }
 
