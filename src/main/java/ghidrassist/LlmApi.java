@@ -3,6 +3,7 @@ package ghidrassist;
 import ghidrassist.apiprovider.APIProviderConfig;
 import ghidrassist.apiprovider.ChatMessage;
 import ghidrassist.apiprovider.ReasoningConfig;
+import ghidrassist.apiprovider.ToolChoiceMode;
 import ghidrassist.context.CharacterBasedTokenCounter;
 import ghidrassist.context.ContextWindowConfig;
 import ghidrassist.context.ContextWindowListener;
@@ -99,6 +100,13 @@ public class LlmApi {
      */
     public void sendConversationalToolRequest(String prompt, List<Map<String, Object>> functions,
             LlmResponseHandler responseHandler, int maxToolRounds, ToolRegistry toolRegistry) {
+        sendConversationalToolRequest(prompt, functions, responseHandler, maxToolRounds, toolRegistry,
+            ToolChoiceMode.AUTO);
+    }
+
+    public void sendConversationalToolRequest(String prompt, List<Map<String, Object>> functions,
+            LlmResponseHandler responseHandler, int maxToolRounds, ToolRegistry toolRegistry,
+            ToolChoiceMode toolChoiceMode) {
         if (!apiClient.isProviderAvailable()) {
             errorHandler.handleError(
                 new IllegalStateException("LLM provider is not initialized."),
@@ -120,7 +128,7 @@ public class LlmApi {
         // Create enhanced response handler for conversational tool calling
         ConversationalToolHandler toolHandler = new ConversationalToolHandler(
             apiClient, functions, responseProcessor, responseHandler, errorHandler, onCompletion,
-            maxToolRounds, toolRegistry, cwm);
+            maxToolRounds, toolRegistry, cwm, toolChoiceMode);
 
         // Store reference for cancellation
         activeConversationalHandler = toolHandler;
@@ -147,6 +155,18 @@ public class LlmApi {
             LlmResponseHandler responseHandler,
             int maxToolRounds,
             ToolRegistry toolRegistry) {
+        sendConversationalToolRequestWithHistory(existingHistory, newPrompt, functions,
+            responseHandler, maxToolRounds, toolRegistry, ToolChoiceMode.AUTO);
+    }
+
+    public void sendConversationalToolRequestWithHistory(
+            List<ChatMessage> existingHistory,
+            String newPrompt,
+            List<Map<String, Object>> functions,
+            LlmResponseHandler responseHandler,
+            int maxToolRounds,
+            ToolRegistry toolRegistry,
+            ToolChoiceMode toolChoiceMode) {
 
         if (!apiClient.isProviderAvailable()) {
             errorHandler.handleError(
@@ -169,7 +189,7 @@ public class LlmApi {
         // Create enhanced response handler for conversational tool calling
         ConversationalToolHandler toolHandler = new ConversationalToolHandler(
             apiClient, functions, responseProcessor, responseHandler, errorHandler, onCompletion,
-            maxToolRounds, toolRegistry, cwm);
+            maxToolRounds, toolRegistry, cwm, toolChoiceMode);
 
         // Store reference for cancellation
         activeConversationalHandler = toolHandler;

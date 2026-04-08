@@ -320,6 +320,14 @@ public class AnthropicPlatformApiProvider extends APIProvider implements Functio
     @Override
     @SuppressWarnings("unchecked")  // Intentional cast from known OpenAI function format
     public String createChatCompletionWithFunctionsFullResponse(List<ChatMessage> messages, List<Map<String, Object>> functions) throws APIProviderException {
+        return createChatCompletionWithFunctionsFullResponse(messages, functions, ToolChoiceMode.AUTO);
+    }
+
+    @Override
+    @SuppressWarnings("unchecked")  // Intentional cast from known OpenAI function format
+    public String createChatCompletionWithFunctionsFullResponse(List<ChatMessage> messages,
+                                                                List<Map<String, Object>> functions,
+                                                                ToolChoiceMode toolChoiceMode) throws APIProviderException {
         // Build payload with native Anthropic tools support
         JsonObject payload = buildMessagesPayload(messages, false);
         
@@ -342,6 +350,10 @@ public class AnthropicPlatformApiProvider extends APIProvider implements Functio
         }
         
         payload.add("tools", anthropicTools);
+        JsonObject toolChoice = new JsonObject();
+        toolChoice.addProperty("type",
+            (toolChoiceMode != null ? toolChoiceMode : ToolChoiceMode.AUTO).toAnthropicToolChoiceType(messages));
+        payload.add("tool_choice", toolChoice);
 
         Request request = new Request.Builder()
             .url(url + ANTHROPIC_MESSAGES_ENDPOINT)
@@ -437,6 +449,12 @@ public class AnthropicPlatformApiProvider extends APIProvider implements Functio
 
     @Override
     public String createChatCompletionWithFunctions(List<ChatMessage> messages, List<Map<String, Object>> functions) throws APIProviderException {
+        return createChatCompletionWithFunctions(messages, functions, ToolChoiceMode.AUTO);
+    }
+
+    @Override
+    public String createChatCompletionWithFunctions(List<ChatMessage> messages, List<Map<String, Object>> functions,
+                                                    ToolChoiceMode toolChoiceMode) throws APIProviderException {
         // Build payload with native Anthropic tools support
         JsonObject payload = buildMessagesPayload(messages, false);
         
@@ -461,10 +479,9 @@ public class AnthropicPlatformApiProvider extends APIProvider implements Functio
         }
         
         payload.add("tools", anthropicTools);
-
-        // Force tool use - "any" means model must use at least one tool
         JsonObject toolChoice = new JsonObject();
-        toolChoice.addProperty("type", "any");
+        toolChoice.addProperty("type",
+            (toolChoiceMode != null ? toolChoiceMode : ToolChoiceMode.AUTO).toAnthropicToolChoiceType(messages));
         payload.add("tool_choice", toolChoice);
 
         Request request = new Request.Builder()
@@ -527,6 +544,15 @@ public class AnthropicPlatformApiProvider extends APIProvider implements Functio
         List<Map<String, Object>> functions,
         StreamingFunctionHandler handler
     ) throws APIProviderException {
+        streamChatCompletionWithFunctions(messages, functions, ToolChoiceMode.AUTO, handler);
+    }
+
+    public void streamChatCompletionWithFunctions(
+        List<ChatMessage> messages,
+        List<Map<String, Object>> functions,
+        ToolChoiceMode toolChoiceMode,
+        StreamingFunctionHandler handler
+    ) throws APIProviderException {
         // Build payload with native Anthropic tools support
         JsonObject payload = buildMessagesPayload(messages, true); // true for streaming
 
@@ -551,6 +577,10 @@ public class AnthropicPlatformApiProvider extends APIProvider implements Functio
         }
 
         payload.add("tools", anthropicTools);
+        JsonObject toolChoice = new JsonObject();
+        toolChoice.addProperty("type",
+            (toolChoiceMode != null ? toolChoiceMode : ToolChoiceMode.AUTO).toAnthropicToolChoiceType(messages));
+        payload.add("tool_choice", toolChoice);
 
         executeStreamingFunctionsWithRetry(payload, handler, "streamChatCompletionWithFunctions", 0);
     }

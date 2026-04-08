@@ -303,7 +303,10 @@ public class QueryTab extends JPanel {
             if (isEditMode) {
                 // Save mode - capture content and notify controller
                 currentMarkdownSource = markdownEditArea.getText();
-                controller.handleChatEditSave(currentMarkdownSource);
+                boolean saved = controller.handleChatEditSave(currentMarkdownSource);
+                if (!saved) {
+                    return;
+                }
 
                 // Switch to view mode
                 contentLayout.show(contentPanel, "view");
@@ -1137,6 +1140,7 @@ public class QueryTab extends JPanel {
     public void setEditableContent(String markdown) {
         currentMarkdownSource = markdown;
         markdownEditArea.setText(markdown);
+        markdownEditArea.setCaretPosition(0);
     }
 
     /**
@@ -1184,8 +1188,8 @@ public class QueryTab extends JPanel {
         }
         editSaveButton.setEnabled(enabled);
         editSaveButton.setToolTipText(enabled
-            ? "Edit document-style chats"
-            : "Structured transcripts are append-only. Use a Notes or document chat to edit content.");
+            ? "Edit the most recent assistant response"
+            : "No assistant response is available to edit yet.");
     }
 
     public void setContextStatus(String contextStatus) {

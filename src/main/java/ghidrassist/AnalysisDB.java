@@ -1456,6 +1456,23 @@ public class AnalysisDB {
         return -1;
     }
 
+    public boolean updateReActMessageContent(String programHash, int sessionId, int messageOrder,
+                                             String newContent) {
+        String sql = "UPDATE GHReActMessages SET content_text = ? " +
+                "WHERE program_hash = ? AND session_id = ? AND message_order = ?";
+
+        try (PreparedStatement pstmt = connection.prepareStatement(sql)) {
+            pstmt.setString(1, newContent);
+            pstmt.setString(2, programHash);
+            pstmt.setInt(3, sessionId);
+            pstmt.setInt(4, messageOrder);
+            return pstmt.executeUpdate() > 0;
+        } catch (SQLException e) {
+            Msg.error(this, "Failed to update ReAct message content: " + e.getMessage(), e);
+            return false;
+        }
+    }
+
     /**
      * Save a ReAct iteration chunk to GHReActIterationChunks table.
      *

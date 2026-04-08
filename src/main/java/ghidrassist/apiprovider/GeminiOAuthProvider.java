@@ -776,7 +776,7 @@ public class GeminiOAuthProvider extends APIProvider implements FunctionCallingP
         }
 
         try {
-            JsonObject requestPayload = buildRequestPayload(messages, null);
+            JsonObject requestPayload = buildRequestPayload(messages, null, ToolChoiceMode.AUTO);
             JsonObject wrapped = wrapRequest(requestPayload);
             Headers headers = getGeminiHeaders().build();
 
@@ -824,7 +824,7 @@ public class GeminiOAuthProvider extends APIProvider implements FunctionCallingP
         isCancelled = false;
 
         try {
-            JsonObject requestPayload = buildRequestPayload(messages, null);
+            JsonObject requestPayload = buildRequestPayload(messages, null, ToolChoiceMode.AUTO);
             JsonObject wrapped = wrapRequest(requestPayload);
             Headers headers = getGeminiHeaders().build();
 
@@ -851,13 +851,21 @@ public class GeminiOAuthProvider extends APIProvider implements FunctionCallingP
     public String createChatCompletionWithFunctions(List<ChatMessage> messages,
                                                     List<Map<String, Object>> functions)
             throws APIProviderException {
+        return createChatCompletionWithFunctions(messages, functions, ToolChoiceMode.AUTO);
+    }
+
+    @Override
+    public String createChatCompletionWithFunctions(List<ChatMessage> messages,
+                                                    List<Map<String, Object>> functions,
+                                                    ToolChoiceMode toolChoiceMode)
+            throws APIProviderException {
         if (!isAuthenticated()) {
             throw new AuthenticationException(name, "createChatCompletionWithFunctions", 401, null,
                 "Not authenticated. Please authenticate via Settings > Edit Provider > Authenticate.");
         }
 
         try {
-            JsonObject requestPayload = buildRequestPayload(messages, functions);
+            JsonObject requestPayload = buildRequestPayload(messages, functions, toolChoiceMode);
             JsonObject wrapped = wrapRequest(requestPayload);
             Headers headers = getGeminiHeaders().build();
 
@@ -902,13 +910,21 @@ public class GeminiOAuthProvider extends APIProvider implements FunctionCallingP
     public String createChatCompletionWithFunctionsFullResponse(List<ChatMessage> messages,
                                                                 List<Map<String, Object>> functions)
             throws APIProviderException {
+        return createChatCompletionWithFunctionsFullResponse(messages, functions, ToolChoiceMode.AUTO);
+    }
+
+    @Override
+    public String createChatCompletionWithFunctionsFullResponse(List<ChatMessage> messages,
+                                                                List<Map<String, Object>> functions,
+                                                                ToolChoiceMode toolChoiceMode)
+            throws APIProviderException {
         if (!isAuthenticated()) {
             throw new AuthenticationException(name, "createChatCompletionWithFunctionsFullResponse", 401, null,
                 "Not authenticated. Please authenticate via Settings > Edit Provider > Authenticate.");
         }
 
         try {
-            JsonObject requestPayload = buildRequestPayload(messages, functions);
+            JsonObject requestPayload = buildRequestPayload(messages, functions, toolChoiceMode);
             JsonObject wrapped = wrapRequest(requestPayload);
             Headers headers = getGeminiHeaders().build();
 
@@ -1003,7 +1019,8 @@ public class GeminiOAuthProvider extends APIProvider implements FunctionCallingP
     /**
      * Builds request payload in Gemini native format.
      */
-    private JsonObject buildRequestPayload(List<ChatMessage> messages, List<Map<String, Object>> tools) {
+    private JsonObject buildRequestPayload(List<ChatMessage> messages, List<Map<String, Object>> tools,
+                                           ToolChoiceMode toolChoiceMode) {
         JsonObject translated = translateMessages(messages);
         JsonObject payload = new JsonObject();
 
@@ -1021,10 +1038,11 @@ public class GeminiOAuthProvider extends APIProvider implements FunctionCallingP
             if (geminiTools.size() > 0) {
                 payload.add("tools", geminiTools);
 
-                // Explicitly set toolConfig to AUTO mode for function calling
                 JsonObject toolConfig = new JsonObject();
                 JsonObject functionCallingConfig = new JsonObject();
-                functionCallingConfig.addProperty("mode", "AUTO");
+                functionCallingConfig.addProperty("mode",
+                    (toolChoiceMode != null ? toolChoiceMode : ToolChoiceMode.AUTO)
+                        .toGeminiFunctionCallingMode(messages));
                 toolConfig.add("functionCallingConfig", functionCallingConfig);
                 payload.add("toolConfig", toolConfig);
             }

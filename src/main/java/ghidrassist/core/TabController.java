@@ -14,9 +14,6 @@ import ghidrassist.GhidrAssistPlugin;
 import ghidrassist.LlmApi;
 import ghidrassist.apiprovider.APIProviderConfig;
 import ghidrassist.apiprovider.ReasoningConfig;
-import ghidrassist.chat.ChatChange;
-import ghidrassist.chat.ChatEditManager;
-import ghidrassist.chat.ChangeType;
 import ghidrassist.chat.PersistedChatMessage;
 import ghidrassist.services.*;
 import ghidrassist.services.RAGManagementService.RAGIndexStats;
@@ -112,9 +109,6 @@ public class TabController {
     // Scheduler for safety timeouts
     private final ScheduledExecutorService safetyScheduler = Executors.newSingleThreadScheduledExecutor();
 
-    // Chat edit manager for chunked editing
-    private final ChatEditManager chatEditManager = new ChatEditManager();
-
     // UI Component references
     private ExplainTab explainTab;
     private QueryTab queryTab;
@@ -195,6 +189,7 @@ public class TabController {
             SwingUtilities.invokeLater(() -> {
                 if (currentStreamingRenderer != null) {
                     queryTab.updateStreamingPrefix(queryService.getConversationPrefixHtml());
+                    queryTab.setEditEnabled(queryService.canEditLatestAssistantResponse());
                 } else {
                     renderCurrentChatSession();
                 }
@@ -206,6 +201,7 @@ public class TabController {
             this.queryTab.setAcceptAllToolsState(
                 queryService.hasActiveProgram(),
                 queryService.isAcceptAllToolsEnabled());
+            this.queryTab.setEditEnabled(queryService.canEditLatestAssistantResponse());
         }
     }
     public void setActionsTab(ActionsTab tab) { this.actionsTab = tab; }
@@ -1618,47 +1614,22 @@ public class TabController {
         }
 
         int currentSessionId = queryService.getCurrentSessionId();
-        Msg.info(this, "Edit Start: currentSessionId=" + currentSessionId);
         if (currentSessionId == -1) {
             Msg.showInfo(this, queryTab, "No Chat",
                     "No active chat session to edit.");
             return false;
         }
-        if (!queryService.isCurrentSessionEditable()) {
-            Msg.showInfo(this, queryTab, "Read-only Transcript",
-                    "Structured chat transcripts are append-only. Use a Notes or document chat to edit content.");
+        if (!queryService.canEditLatestAssistantResponse()) {
+            Msg.showInfo(this, queryTab, "No Assistant Response",
+                    "There is no assistant response available to edit yet.");
             return false;
         }
-
-        // Use in-memory messages first (already current after streaming completion)
-        List<PersistedChatMessage> messages = queryService.getMessages();
-
-        // Fall back to database if in-memory is empty
-        if (messages.isEmpty()) {
-            queryService.loadMessagesFromDatabase();
-            messages = queryService.getMessages();
-        }
-
-        Msg.info(this, "Edit Start: loaded " + messages.size() + " messages");
-
-        if (messages.isEmpty()) {
-            Msg.showInfo(this, queryTab, "Empty Chat",
-                    "No messages to edit in this chat.");
+        String editableContent = queryService.getLatestAssistantResponseMarkdown();
+        if (editableContent == null) {
+            Msg.showInfo(this, queryTab, "No Assistant Response",
+                    "There is no assistant response available to edit yet.");
             return false;
         }
-
-        // Get chat name from sessions list
-        List<AnalysisDB.ChatSession> sessions = queryService.getChatSessions();
-        String chatName = "Untitled";
-        for (AnalysisDB.ChatSession session : sessions) {
-            if (session.getId() == currentSessionId) {
-                chatName = session.getDescription();
-                break;
-            }
-        }
-
-        // Generate editable content with chunk markers
-        String editableContent = chatEditManager.generateEditableContent(chatName, messages);
         queryTab.setEditableContent(editableContent);
         return true;
     }
@@ -1666,114 +1637,23 @@ public class TabController {
     /**
      * Handle when user clicks Save button - parse and apply changes
      */
-    public void handleChatEditSave(String editedContent) {
+    public boolean handleChatEditSave(String editedContent) {
         if (queryTab == null || editedContent == null) {
-            Msg.info(this, "Edit Save: null queryTab or editedContent");
-            return;
+            return false;
         }
 
         int currentSessionId = queryService.getCurrentSessionId();
-        Msg.info(this, "Edit Save: currentSessionId=" + currentSessionId);
         if (currentSessionId == -1) {
-            return;
+            return false;
         }
 
-        String programHash = getProgramHash();
-        Msg.info(this, "Edit Save: programHash=" + (programHash != null ? programHash.substring(0, 8) + "..." : "null"));
-        if (programHash == null) {
-            return;
+        if (!queryService.updateLatestAssistantResponseMarkdown(editedContent)) {
+            Msg.showError(this, queryTab, "Save Failed",
+                "Unable to save the edited assistant response.");
+            return false;
         }
-
-        // Detect changes
-        List<ChatChange> changes = chatEditManager.parseEditedContent(editedContent);
-        Msg.info(this, "Edit Save: detected " + changes.size() + " changes");
-        for (ChatChange change : changes) {
-            Msg.info(this, "  Change: " + change.getChangeType() + " - " + change.getChunkId());
-        }
-
-        if (!changes.isEmpty()) {
-            applyChanges(programHash, currentSessionId, changes, editedContent);
-            reloadCurrentChat();
-        } else {
-            // No changes detected - still save all messages as a full rebuild
-            Msg.info(this, "Edit Save: no changes detected, performing full rebuild anyway");
-            List<ChatEditManager.ExtractedMessage> finalMessages =
-                    chatEditManager.extractAllMessages(editedContent);
-            Msg.info(this, "Edit Save: extracted " + finalMessages.size() + " messages for rebuild");
-
-            if (!finalMessages.isEmpty()) {
-                List<PersistedChatMessage> newMessageList = new ArrayList<>();
-                for (int i = 0; i < finalMessages.size(); i++) {
-                    ChatEditManager.ExtractedMessage msg = finalMessages.get(i);
-                    Msg.info(this, "  Saving message " + i + ": role=" + msg.role);
-
-                    PersistedChatMessage persistedMsg = new PersistedChatMessage(
-                            null, msg.role, msg.content,
-                            new Timestamp(System.currentTimeMillis()), i
-                    );
-                    persistedMsg.setProviderType("edited");
-                    persistedMsg.setMessageType("edited");
-                    newMessageList.add(persistedMsg);
-                }
-
-                queryService.replaceAllMessages(newMessageList);
-            }
-            reloadCurrentChat();
-        }
-    }
-
-    /**
-     * Apply detected changes to the database
-     */
-    private void applyChanges(String programHash, int chatId,
-                              List<ChatChange> changes, String editedContent) {
-        boolean messagesUpdated = false;
-        boolean titleUpdated = false;
-        String newTitle = null;
-
-        // Detect what changed
-        for (ChatChange change : changes) {
-            if (change.getChangeType() == ChangeType.MODIFIED) {
-                if (change.isTitleChange()) {
-                    titleUpdated = true;
-                    newTitle = change.getNewContent();
-                } else {
-                    messagesUpdated = true;
-                }
-            } else if (change.getChangeType() == ChangeType.DELETED ||
-                       change.getChangeType() == ChangeType.ADDED) {
-                messagesUpdated = true;
-            }
-        }
-
-        // Full rebuild from scratch
-        if (messagesUpdated) {
-            List<ChatEditManager.ExtractedMessage> finalMessages =
-                    chatEditManager.extractAllMessages(editedContent);
-
-            // Build new message list
-            List<PersistedChatMessage> newMessageList = new ArrayList<>();
-            for (int i = 0; i < finalMessages.size(); i++) {
-                ChatEditManager.ExtractedMessage msg = finalMessages.get(i);
-
-                PersistedChatMessage persistedMsg = new PersistedChatMessage(
-                        null, msg.role, msg.content,
-                        new Timestamp(System.currentTimeMillis()), i
-                );
-                persistedMsg.setProviderType("edited");
-                persistedMsg.setMessageType("edited");
-                newMessageList.add(persistedMsg);
-            }
-
-            // Replace all messages in memory and database atomically
-            queryService.replaceAllMessages(newMessageList);
-        }
-
-        // Handle title changes
-        if (titleUpdated && newTitle != null) {
-            queryService.updateChatDescription(chatId, newTitle);
-            refreshChatHistory();
-        }
+        reloadCurrentChat();
+        return true;
     }
 
     /**
@@ -1803,7 +1683,7 @@ public class TabController {
         }
         queryTab.setResponseText(queryService.getConversationDisplayHtml());
         queryTab.setMarkdownSource(queryService.getConversationHistory());
-        queryTab.setEditEnabled(queryService.isCurrentSessionEditable());
+        queryTab.setEditEnabled(queryService.canEditLatestAssistantResponse());
         queryTab.setContextStatus(queryService.getContextStatusText());
         queryTab.setAcceptAllToolsState(
             queryService.hasActiveProgram(),

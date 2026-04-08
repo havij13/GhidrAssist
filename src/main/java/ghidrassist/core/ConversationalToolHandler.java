@@ -2,9 +2,10 @@ package ghidrassist.core;
 
 import ghidrassist.LlmApi;
 import ghidrassist.apiprovider.AnthropicPlatformApiProvider;
-import ghidrassist.apiprovider.OpenAIPlatformApiProvider;
 import ghidrassist.apiprovider.LMStudioProvider;
 import ghidrassist.apiprovider.ChatMessage;
+import ghidrassist.apiprovider.OpenAIPlatformApiProvider;
+import ghidrassist.apiprovider.ToolChoiceMode;
 import ghidrassist.apiprovider.exceptions.RateLimitException;
 import ghidrassist.context.ContextWindowManager;
 import ghidrassist.context.ContextStatus;
@@ -40,6 +41,7 @@ public class ConversationalToolHandler {
     private final Runnable onCompletionCallback;
     private final ToolRegistry toolRegistry;
     private final ContextWindowManager contextWindowManager; // nullable - for proper context management
+    private final ToolChoiceMode toolChoiceMode;
 
     private final List<ChatMessage> conversationHistory;
     private final StringBuilder accumulatedAssistantContent = new StringBuilder();
@@ -76,7 +78,7 @@ public class ConversationalToolHandler {
             int maxToolRounds,
             ToolRegistry toolRegistry) {
         this(apiClient, functions, responseProcessor, userHandler, errorHandler, onCompletionCallback,
-            maxToolRounds, toolRegistry, null);
+            maxToolRounds, toolRegistry, null, ToolChoiceMode.AUTO);
     }
 
     public ConversationalToolHandler(
@@ -89,6 +91,21 @@ public class ConversationalToolHandler {
             int maxToolRounds,
             ToolRegistry toolRegistry,
             ContextWindowManager contextWindowManager) {
+        this(apiClient, functions, responseProcessor, userHandler, errorHandler, onCompletionCallback,
+            maxToolRounds, toolRegistry, contextWindowManager, ToolChoiceMode.AUTO);
+    }
+
+    public ConversationalToolHandler(
+            LlmApiClient apiClient,
+            List<Map<String, Object>> functions,
+            ResponseProcessor responseProcessor,
+            LlmApi.LlmResponseHandler userHandler,
+            LlmErrorHandler errorHandler,
+            Runnable onCompletionCallback,
+            int maxToolRounds,
+            ToolRegistry toolRegistry,
+            ContextWindowManager contextWindowManager,
+            ToolChoiceMode toolChoiceMode) {
 
         this.apiClient = apiClient;
         this.availableFunctions = functions;
@@ -100,6 +117,7 @@ public class ConversationalToolHandler {
         this.maxToolRounds = maxToolRounds > 0 ? maxToolRounds : 10; // Default to 10 if invalid
         this.toolRegistry = toolRegistry;
         this.contextWindowManager = contextWindowManager;
+        this.toolChoiceMode = toolChoiceMode != null ? toolChoiceMode : ToolChoiceMode.AUTO;
     }
     
     /**
@@ -130,7 +148,7 @@ public class ConversationalToolHandler {
         toolCallRound = 0; // Reset tool call round counter
 
         // Add initial user message
-        conversationHistory.addAll(apiClient.createFunctionMessages(userPrompt));
+        conversationHistory.addAll(apiClient.createFunctionMessages(userPrompt, toolChoiceMode));
         
         // Start the conversation loop
         userHandler.onStart();
@@ -296,7 +314,7 @@ public class ConversationalToolHandler {
                         }
 
                         return apiClient.createChatCompletionWithFunctionsFullResponse(
-                            conversationHistory, availableFunctions);
+                            conversationHistory, availableFunctions, toolChoiceMode);
 
                     } catch (Exception e) {
                         throw new RuntimeException(e);
@@ -412,6 +430,7 @@ public class ConversationalToolHandler {
             provider.streamChatCompletionWithFunctions(
                 conversationHistory,
                 availableFunctions,
+                toolChoiceMode,
                 new AnthropicPlatformApiProvider.StreamingFunctionHandler() {
                     @Override
                     public void onTextUpdate(String textDelta) {
@@ -557,6 +576,7 @@ public class ConversationalToolHandler {
             provider.streamChatCompletionWithFunctions(
                 conversationHistory,
                 availableFunctions,
+                toolChoiceMode,
                 new OpenAIPlatformApiProvider.StreamingFunctionHandler() {
                     @Override
                     public void onTextUpdate(String textDelta) {
@@ -646,6 +666,7 @@ public class ConversationalToolHandler {
             provider.streamChatCompletionWithFunctions(
                 conversationHistory,
                 availableFunctions,
+                toolChoiceMode,
                 new LMStudioProvider.StreamingFunctionHandler() {
                     @Override
                     public void onTextUpdate(String textDelta) {

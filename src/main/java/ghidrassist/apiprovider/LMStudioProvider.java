@@ -161,10 +161,19 @@ public class LMStudioProvider extends APIProvider implements FunctionCallingProv
 
     @Override
     public String createChatCompletionWithFunctionsFullResponse(List<ChatMessage> messages, List<Map<String, Object>> functions) throws APIProviderException {
+        return createChatCompletionWithFunctionsFullResponse(messages, functions, ToolChoiceMode.AUTO);
+    }
+
+    @Override
+    public String createChatCompletionWithFunctionsFullResponse(List<ChatMessage> messages,
+                                                                List<Map<String, Object>> functions,
+                                                                ToolChoiceMode toolChoiceMode) throws APIProviderException {
         JsonObject payload = buildChatCompletionPayload(messages, true); // Enable streaming
 
         // LMStudio uses the modern 'tools' format, not 'functions'
         payload.add("tools", gson.toJsonTree(functions));
+        payload.addProperty("tool_choice",
+            (toolChoiceMode != null ? toolChoiceMode : ToolChoiceMode.AUTO).toOpenAIToolChoice(messages));
 
         Request request = new Request.Builder()
             .url(super.getUrl() + LMSTUDIO_CHAT_ENDPOINT)
@@ -314,13 +323,19 @@ public class LMStudioProvider extends APIProvider implements FunctionCallingProv
 
     @Override
     public String createChatCompletionWithFunctions(List<ChatMessage> messages, List<Map<String, Object>> functions) throws APIProviderException {
+        return createChatCompletionWithFunctions(messages, functions, ToolChoiceMode.AUTO);
+    }
+
+    @Override
+    public String createChatCompletionWithFunctions(List<ChatMessage> messages, List<Map<String, Object>> functions,
+                                                    ToolChoiceMode toolChoiceMode) throws APIProviderException {
         JsonObject payload = buildChatCompletionPayload(messages, false);
 
         // LMStudio uses the modern 'tools' format, not 'functions'
         payload.add("tools", gson.toJsonTree(functions));
 
-        // Use tool_choice instead of function_call for modern tools API
-        payload.addProperty("tool_choice", "auto");
+        payload.addProperty("tool_choice",
+            (toolChoiceMode != null ? toolChoiceMode : ToolChoiceMode.AUTO).toOpenAIToolChoice(messages));
 
         Request request = new Request.Builder()
             .url(super.getUrl() + LMSTUDIO_CHAT_ENDPOINT)
@@ -533,8 +548,19 @@ public class LMStudioProvider extends APIProvider implements FunctionCallingProv
         List<Map<String, Object>> functions,
         StreamingFunctionHandler handler
     ) throws APIProviderException {
+        streamChatCompletionWithFunctions(messages, functions, ToolChoiceMode.AUTO, handler);
+    }
+
+    public void streamChatCompletionWithFunctions(
+        List<ChatMessage> messages,
+        List<Map<String, Object>> functions,
+        ToolChoiceMode toolChoiceMode,
+        StreamingFunctionHandler handler
+    ) throws APIProviderException {
         JsonObject payload = buildChatCompletionPayload(messages, true);
         payload.add("tools", gson.toJsonTree(functions));
+        payload.addProperty("tool_choice",
+            (toolChoiceMode != null ? toolChoiceMode : ToolChoiceMode.AUTO).toOpenAIToolChoice(messages));
 
         Request request = new Request.Builder()
             .url(super.getUrl() + LMSTUDIO_CHAT_ENDPOINT)

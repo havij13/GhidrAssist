@@ -161,10 +161,18 @@ public class OpenWebUiProvider extends APIProvider implements FunctionCallingPro
 
     @Override
     public String createChatCompletionWithFunctionsFullResponse(List<ChatMessage> messages, List<Map<String, Object>> functions) throws APIProviderException {
+        return createChatCompletionWithFunctionsFullResponse(messages, functions, ToolChoiceMode.AUTO);
+    }
+
+    @Override
+    public String createChatCompletionWithFunctionsFullResponse(List<ChatMessage> messages, List<Map<String, Object>> functions,
+                                                                ToolChoiceMode toolChoiceMode) throws APIProviderException {
         JsonObject payload = buildChatCompletionPayload(messages, false);
         
         // Add tools (functions) to the payload
         payload.add("tools", gson.toJsonTree(functions));
+        payload.addProperty("tool_choice",
+            (toolChoiceMode != null ? toolChoiceMode : ToolChoiceMode.AUTO).toOpenAIToolChoice(messages));
 
         // Specify json output
         payload.addProperty("format", "json");
@@ -242,13 +250,18 @@ public class OpenWebUiProvider extends APIProvider implements FunctionCallingPro
 
     @Override
     public String createChatCompletionWithFunctions(List<ChatMessage> messages, List<Map<String, Object>> functions) throws APIProviderException {
+        return createChatCompletionWithFunctions(messages, functions, ToolChoiceMode.AUTO);
+    }
+
+    @Override
+    public String createChatCompletionWithFunctions(List<ChatMessage> messages, List<Map<String, Object>> functions,
+                                                    ToolChoiceMode toolChoiceMode) throws APIProviderException {
         JsonObject payload = buildChatCompletionPayload(messages, false);
         
         // Add tools (functions) to the payload
         payload.add("tools", gson.toJsonTree(functions));
-
-        // Force tool use - "required" means model must use at least one tool
-        payload.addProperty("tool_choice", "required");
+        payload.addProperty("tool_choice",
+            (toolChoiceMode != null ? toolChoiceMode : ToolChoiceMode.AUTO).toOpenAIToolChoice(messages));
 
         Request request = new Request.Builder()
             .url(super.getUrl() + OPENWEBUI_CHAT_ENDPOINT)

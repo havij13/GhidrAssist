@@ -103,6 +103,18 @@ public abstract class APIProvider implements ChatProvider {
 	public void setTimeout(Integer timeout2) { this.timeout = Duration.ofSeconds(timeout2 != null ? timeout2 : 90); }
 	public Integer getTimeout() { return Math.toIntExact(this.timeout.getSeconds()); }
 
+    public String createChatCompletionWithFunctions(List<ChatMessage> messages,
+                                                    List<Map<String, Object>> functions,
+                                                    ToolChoiceMode toolChoiceMode) throws APIProviderException {
+        return createChatCompletionWithFunctions(messages, functions);
+    }
+
+    public String createChatCompletionWithFunctionsFullResponse(List<ChatMessage> messages,
+                                                                List<Map<String, Object>> functions,
+                                                                ToolChoiceMode toolChoiceMode) throws APIProviderException {
+        return createChatCompletionWithFunctionsFullResponse(messages, functions);
+    }
+
     public void testConnection() throws APIProviderException {
         List<ChatMessage> messages = new java.util.ArrayList<>();
         messages.add(new ChatMessage(ChatMessage.ChatMessageRole.USER,

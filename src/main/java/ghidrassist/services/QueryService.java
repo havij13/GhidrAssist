@@ -7,6 +7,7 @@ import ghidrassist.LlmApi;
 import ghidrassist.agent.react.TodoListManager;
 import ghidrassist.apiprovider.APIProviderConfig;
 import ghidrassist.apiprovider.ChatMessage;
+import ghidrassist.apiprovider.ToolChoiceMode;
 import ghidrassist.chat.PersistedChatMessage;
 import ghidrassist.chat.message.MessageRepository;
 import ghidrassist.chat.message.MessageStore;
@@ -316,7 +317,8 @@ public class QueryService {
                     nativeFunctions,
                     handler,
                     maxToolRounds,
-                    toolRegistry
+                    toolRegistry,
+                    ToolChoiceMode.AUTO
                 );
             } else {
                 // Use history-aware method to preserve thinking data across turns
@@ -326,7 +328,8 @@ public class QueryService {
                     nativeFunctions,
                     handler,
                     maxToolRounds,
-                    toolRegistry
+                    toolRegistry,
+                    ToolChoiceMode.AUTO
                 );
             }
         } else {
@@ -380,7 +383,8 @@ public class QueryService {
                     allFunctions,
                     handler,
                     maxToolRounds,
-                    toolRegistry
+                    toolRegistry,
+                    ToolChoiceMode.AUTO
                 );
             } else {
                 // Use history-aware method to preserve thinking data across turns
@@ -390,7 +394,8 @@ public class QueryService {
                     allFunctions,
                     handler,
                     maxToolRounds,
-                    toolRegistry
+                    toolRegistry,
+                    ToolChoiceMode.AUTO
                 );
             }
         } else {
@@ -748,6 +753,58 @@ public class QueryService {
 
     public boolean isCurrentSessionEditable() {
         return isSessionEditable(sessionManager.getCurrentSessionId());
+    }
+
+    public boolean canEditLatestAssistantResponse() {
+        return findLatestAssistantTarget() != null;
+    }
+
+    public String getLatestAssistantResponseMarkdown() {
+        EditableAssistantTarget target = findLatestAssistantTarget();
+        return target != null ? target.content() : null;
+    }
+
+    public boolean updateLatestAssistantResponseMarkdown(String editedMarkdown) {
+        int sessionId = sessionManager.getCurrentSessionId();
+        String programHash = getProgramHash();
+        if (sessionId == ChatSessionManager.NO_SESSION || programHash == null || editedMarkdown == null) {
+            return false;
+        }
+
+        EditableAssistantTarget target = findLatestAssistantTarget();
+        if (target == null) {
+            return false;
+        }
+
+        String normalizedMarkdown = editedMarkdown.stripTrailing();
+        boolean updated;
+        if (target.reactMessage()) {
+            updated = analysisDB.updateReActMessageContent(programHash, sessionId, target.messageOrder(),
+                normalizedMarkdown);
+            if (updated) {
+                transcriptService.updateLatestAssistantMessage(sessionId, normalizedMarkdown);
+            }
+        } else {
+            Integer messageId = target.messageId();
+            if (messageId == null) {
+                return false;
+            }
+            updated = messageRepository.updateMessageContent(messageId, normalizedMarkdown, "edited");
+            if (updated) {
+                updateInMemoryAssistantMessage(messageId, target.messageOrder(), normalizedMarkdown);
+                boolean transcriptUpdated = transcriptService.updateAssistantMessageBySource(
+                    sessionId, messageId, target.messageOrder(), normalizedMarkdown);
+                if (!transcriptUpdated) {
+                    transcriptService.updateLatestAssistantMessage(sessionId, normalizedMarkdown);
+                }
+            }
+        }
+
+        if (updated) {
+            sessionRepository.touchSession(sessionId);
+            notifyTranscriptUpdated(sessionId);
+        }
+        return updated;
     }
 
     /**
@@ -1272,6 +1329,71 @@ public class QueryService {
         return parent.resolve("ghidrassist_chat_artifacts");
     }
 
+    private EditableAssistantTarget findLatestAssistantTarget() {
+        int sessionId = sessionManager.getCurrentSessionId();
+        String programHash = getProgramHash();
+        if (sessionId == ChatSessionManager.NO_SESSION || programHash == null) {
+            return null;
+        }
+
+        if (analysisDB.isReActSession(sessionId)) {
+            List<ghidrassist.apiprovider.ChatMessage> reactMessages =
+                analysisDB.getReActMessages(programHash, sessionId);
+            for (int i = reactMessages.size() - 1; i >= 0; i--) {
+                ghidrassist.apiprovider.ChatMessage message = reactMessages.get(i);
+                if (message != null
+                        && "assistant".equalsIgnoreCase(message.getRole())
+                        && message.getContent() != null
+                        && !message.getContent().isBlank()) {
+                    return new EditableAssistantTarget(null, i, message.getContent(), true);
+                }
+            }
+            return null;
+        }
+
+        List<PersistedChatMessage> messages = messageStore.getMessages();
+        if (messages.isEmpty()) {
+            loadMessagesFromDatabase();
+            messages = messageStore.getMessages();
+        }
+        for (int i = messages.size() - 1; i >= 0; i--) {
+            PersistedChatMessage message = messages.get(i);
+            if (message != null
+                    && "assistant".equalsIgnoreCase(message.getRole())
+                    && message.getContent() != null
+                    && !message.getContent().isBlank()) {
+                return new EditableAssistantTarget(
+                    message.getDbId(), message.getOrder(), message.getContent(), false);
+            }
+        }
+        return null;
+    }
+
+    private void updateInMemoryAssistantMessage(int messageId, int messageOrder, String newContent) {
+        List<PersistedChatMessage> messages = messageStore.getMessages();
+        if (messages.isEmpty()) {
+            return;
+        }
+        boolean updated = false;
+        for (PersistedChatMessage message : messages) {
+            if (message == null) {
+                continue;
+            }
+            boolean sameMessage = (message.getDbId() != null && message.getDbId() == messageId)
+                || message.getOrder() == messageOrder;
+            if (!sameMessage) {
+                continue;
+            }
+            message.setContent(newContent);
+            message.setMessageType("edited");
+            updated = true;
+            break;
+        }
+        if (updated) {
+            messageStore.setMessages(messages);
+        }
+    }
+
     private PersistedChatMessage getLastMessage() {
         List<PersistedChatMessage> messages = messageStore.getMessages();
         if (!messages.isEmpty()) {
@@ -1285,6 +1407,37 @@ public class QueryService {
      */
     public AnalysisDB getAnalysisDB() {
         return analysisDB;
+    }
+
+    private static final class EditableAssistantTarget {
+        private final Integer messageId;
+        private final int messageOrder;
+        private final String content;
+        private final boolean reactMessage;
+
+        private EditableAssistantTarget(Integer messageId, int messageOrder,
+                                        String content, boolean reactMessage) {
+            this.messageId = messageId;
+            this.messageOrder = messageOrder;
+            this.content = content;
+            this.reactMessage = reactMessage;
+        }
+
+        private Integer messageId() {
+            return messageId;
+        }
+
+        private int messageOrder() {
+            return messageOrder;
+        }
+
+        private String content() {
+            return content;
+        }
+
+        private boolean reactMessage() {
+            return reactMessage;
+        }
     }
 
     public TranscriptService getTranscriptService() {

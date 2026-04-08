@@ -4,6 +4,7 @@ import ghidrassist.AnalysisDB;
 import ghidrassist.GhidrAssistPlugin;
 import ghidrassist.LlmApi;
 import ghidrassist.apiprovider.APIProviderConfig;
+import ghidrassist.apiprovider.ToolChoiceMode;
 import ghidrassist.mcp2.tools.MCPTool;
 import ghidrassist.mcp2.tools.MCPToolManager;
 import ghidrassist.context.ContextWindowListener;
@@ -553,7 +554,8 @@ public class ReActOrchestrator {
         };
 
         // Call the conversational tool handler
-        llmApi.sendConversationalToolRequest(prompt, tools, iterationHandler, maxToolRounds, toolRegistry);
+        llmApi.sendConversationalToolRequest(prompt, tools, iterationHandler, maxToolRounds,
+            toolRegistry, ToolChoiceMode.REQUIRED_INITIAL);
     }
 
     /**

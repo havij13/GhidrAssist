@@ -241,6 +241,86 @@ public class TranscriptService implements ToolExecutionObserver {
         renderer.toggleTodoCard(eventId);
     }
 
+    public synchronized boolean updateAssistantMessageBySource(int sessionId, Integer sourceMessageId,
+                                                               Integer sourceMessageOrder, String newContent) {
+        if (sessionId <= 0 || (sourceMessageId == null && sourceMessageOrder == null)) {
+            return false;
+        }
+        String sql = """
+            UPDATE GHChatTranscriptEvents
+            SET content_text = ?, preview_text = ?, artifact_id = NULL
+            WHERE id = (
+                SELECT id FROM GHChatTranscriptEvents
+                WHERE session_id = ? AND event_kind = ? AND (
+                    (? IS NOT NULL AND source_message_id = ?)
+                    OR (? IS NOT NULL AND source_message_order = ?)
+                )
+                ORDER BY id DESC
+                LIMIT 1
+            )
+        """;
+        try (PreparedStatement stmt = connection.prepareStatement(sql)) {
+            stmt.setString(1, newContent);
+            stmt.setString(2, newContent);
+            stmt.setInt(3, sessionId);
+            stmt.setString(4, TranscriptEventKind.ASSISTANT_MESSAGE.getDbValue());
+            if (sourceMessageId != null) {
+                stmt.setInt(5, sourceMessageId);
+                stmt.setInt(6, sourceMessageId);
+            } else {
+                stmt.setNull(5, java.sql.Types.INTEGER);
+                stmt.setNull(6, java.sql.Types.INTEGER);
+            }
+            if (sourceMessageOrder != null) {
+                stmt.setInt(7, sourceMessageOrder);
+                stmt.setInt(8, sourceMessageOrder);
+            } else {
+                stmt.setNull(7, java.sql.Types.INTEGER);
+                stmt.setNull(8, java.sql.Types.INTEGER);
+            }
+            boolean updated = stmt.executeUpdate() > 0;
+            if (updated) {
+                touchSession(sessionId);
+                notifySessionUpdated(sessionId);
+            }
+            return updated;
+        } catch (SQLException e) {
+            Msg.warn(this, "Failed to update assistant transcript event by source: " + e.getMessage());
+            return false;
+        }
+    }
+
+    public synchronized boolean updateLatestAssistantMessage(int sessionId, String newContent) {
+        if (sessionId <= 0) {
+            return false;
+        }
+        String sql = """
+            UPDATE GHChatTranscriptEvents
+            SET content_text = ?, preview_text = ?, artifact_id = NULL
+            WHERE id = (
+                SELECT id FROM GHChatTranscriptEvents
+                WHERE session_id = ? AND event_kind = ?
+                ORDER BY id DESC
+                LIMIT 1
+            )
+        """;
+        try (PreparedStatement stmt = connection.prepareStatement(sql)) {
+            stmt.setString(1, newContent);
+            stmt.setString(2, newContent);
+            stmt.setInt(3, sessionId);
+            stmt.setString(4, TranscriptEventKind.ASSISTANT_MESSAGE.getDbValue());
+            boolean updated = stmt.executeUpdate() > 0;
+            if (updated) {
+                touchSession(sessionId);
+                notifySessionUpdated(sessionId);
+            }
+            return updated;
+        } catch (SQLException e) {
+            Msg.warn(this, "Failed to update latest assistant transcript event: " + e.getMessage());
+            return false;
+        }
+    }
+
     public synchronized List<TranscriptEvent> loadEvents(int sessionId) {
         List<TranscriptEvent> events = new ArrayList<>();
         String sql = """

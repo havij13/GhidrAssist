@@ -551,7 +551,7 @@ public class OpenAIOAuthProvider extends APIProvider implements FunctionCallingP
         
         try {
             // Build payload - Codex requires stream=true, we collect the response
-            JsonObject payload = buildRequestPayload(messages, null);
+            JsonObject payload = buildRequestPayload(messages, null, ToolChoiceMode.AUTO);
             Headers headers = getCodexHeaders().build();
             
             Request request = new Request.Builder()
@@ -598,7 +598,7 @@ public class OpenAIOAuthProvider extends APIProvider implements FunctionCallingP
         isCancelled = false;
         
         try {
-            JsonObject payload = buildRequestPayload(messages, null);
+            JsonObject payload = buildRequestPayload(messages, null, ToolChoiceMode.AUTO);
             Headers headers = getCodexHeaders().build();
             
             Request request = new Request.Builder()
@@ -758,13 +758,21 @@ public class OpenAIOAuthProvider extends APIProvider implements FunctionCallingP
     public String createChatCompletionWithFunctions(List<ChatMessage> messages,
                                                     List<Map<String, Object>> functions) 
             throws APIProviderException {
+        return createChatCompletionWithFunctions(messages, functions, ToolChoiceMode.AUTO);
+    }
+
+    @Override
+    public String createChatCompletionWithFunctions(List<ChatMessage> messages,
+                                                    List<Map<String, Object>> functions,
+                                                    ToolChoiceMode toolChoiceMode)
+            throws APIProviderException {
         if (!isAuthenticated()) {
             throw new AuthenticationException(name, "createChatCompletionWithFunctions", 401, null,
                 "Not authenticated. Please authenticate via Settings > Edit Provider > Authenticate.");
         }
         
         try {
-            JsonObject payload = buildRequestPayload(messages, functions);
+            JsonObject payload = buildRequestPayload(messages, functions, toolChoiceMode);
             Msg.info(this, "Submitting OAuth Responses function request: input_items="
                 + payload.getAsJsonArray("input").size() + ", tools="
                 + (functions != null ? functions.size() : 0) + ", model=" + this.model);
@@ -806,13 +814,21 @@ public class OpenAIOAuthProvider extends APIProvider implements FunctionCallingP
     public String createChatCompletionWithFunctionsFullResponse(List<ChatMessage> messages,
                                                                 List<Map<String, Object>> functions)
             throws APIProviderException {
+        return createChatCompletionWithFunctionsFullResponse(messages, functions, ToolChoiceMode.AUTO);
+    }
+
+    @Override
+    public String createChatCompletionWithFunctionsFullResponse(List<ChatMessage> messages,
+                                                                List<Map<String, Object>> functions,
+                                                                ToolChoiceMode toolChoiceMode)
+            throws APIProviderException {
         if (!isAuthenticated()) {
             throw new AuthenticationException(name, "createChatCompletionWithFunctionsFullResponse", 401, null,
                 "Not authenticated. Please authenticate via Settings > Edit Provider > Authenticate.");
         }
         
         try {
-            JsonObject payload = buildRequestPayload(messages, functions);
+            JsonObject payload = buildRequestPayload(messages, functions, toolChoiceMode);
             Headers headers = getCodexHeaders().build();
             
             Request request = new Request.Builder()
@@ -881,7 +897,8 @@ public class OpenAIOAuthProvider extends APIProvider implements FunctionCallingP
      * Builds request payload in OpenAI Responses API format.
      * CRITICAL: Codex API requires store=false AND stream=true.
      */
-    private JsonObject buildRequestPayload(List<ChatMessage> messages, List<Map<String, Object>> tools) {
+    private JsonObject buildRequestPayload(List<ChatMessage> messages, List<Map<String, Object>> tools,
+                                           ToolChoiceMode toolChoiceMode) {
         JsonObject payload = new JsonObject();
         payload.addProperty("model", this.model);
         JsonArray input = translateMessagesToInput(messages);
@@ -894,7 +911,8 @@ public class OpenAIOAuthProvider extends APIProvider implements FunctionCallingP
         // Add tools if present
         if (tools != null && !tools.isEmpty()) {
             payload.add("tools", translateToolsToFormat(tools));
-            String toolChoice = shouldForceToolChoice(messages) ? "required" : "auto";
+            ToolChoiceMode resolvedMode = toolChoiceMode != null ? toolChoiceMode : ToolChoiceMode.AUTO;
+            String toolChoice = resolvedMode.toOpenAIToolChoice(messages);
             payload.addProperty("tool_choice", toolChoice);
             payload.addProperty("parallel_tool_calls", true);
             Msg.info(this, "OAuth Responses tool_choice=" + toolChoice
@@ -902,37 +920,6 @@ public class OpenAIOAuthProvider extends APIProvider implements FunctionCallingP
         }
         
         return payload;
-    }
-
-    private boolean shouldForceToolChoice(List<ChatMessage> messages) {
-        if (messages == null || messages.isEmpty()) {
-            return true;
-        }
-
-        for (int i = messages.size() - 1; i >= 0; i--) {
-            ChatMessage message = messages.get(i);
-            if (message == null || message.getRole() == null) {
-                continue;
-            }
-
-            String role = message.getRole();
-            if (ChatMessage.ChatMessageRole.SYSTEM.equals(role)) {
-                continue;
-            }
-
-            // After a tool result, let the model either synthesize an answer
-            // or decide to call another tool on its own.
-            if (ChatMessage.ChatMessageRole.TOOL.equals(role)
-                    || ChatMessage.ChatMessageRole.FUNCTION.equals(role)) {
-                return false;
-            }
-
-            // On a fresh user turn, force at least one tool so the tool-capable
-            // query path does not silently degrade into plain chat.
-            return true;
-        }
-
-        return true;
     }
 
     /**
