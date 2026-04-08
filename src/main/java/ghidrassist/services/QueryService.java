@@ -4,6 +4,7 @@ import com.google.gson.JsonObject;
 import ghidrassist.AnalysisDB;
 import ghidrassist.GhidrAssistPlugin;
 import ghidrassist.LlmApi;
+import ghidrassist.agent.react.TodoListManager;
 import ghidrassist.apiprovider.APIProviderConfig;
 import ghidrassist.apiprovider.ChatMessage;
 import ghidrassist.chat.PersistedChatMessage;
@@ -40,6 +41,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.function.Consumer;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -78,6 +80,8 @@ public class QueryService {
     private final MarkdownHelper markdownHelper;
     private NativeToolManager nativeToolManager;
     private volatile ContextUsageSnapshot contextUsageSnapshot = ContextUsageSnapshot.empty();
+    private final AtomicLong contextTrackingGeneration = new AtomicLong(0);
+    private volatile long activeContextTrackingGeneration = 0;
     private volatile Consumer<String> contextStatusConsumer;
     private volatile Consumer<PendingApprovalView> pendingApprovalConsumer;
     private volatile Consumer<Integer> transcriptUpdateConsumer;
@@ -577,6 +581,32 @@ public class QueryService {
         return toolApprovalService.resolvePendingApproval(requestId, decision);
     }
 
+    public boolean isAcceptAllToolsEnabled() {
+        return toolApprovalService.isAcceptAllToolsEnabled(sessionManager.getCurrentSessionId());
+    }
+
+    public boolean hasActiveProgram() {
+        return getProgramHash() != null;
+    }
+
+    public void setAcceptAllToolsEnabled(boolean enabled) {
+        int sessionId = sessionManager.getCurrentSessionId();
+        if (sessionId == ChatSessionManager.NO_SESSION) {
+            return;
+        }
+        toolApprovalService.setAcceptAllToolsEnabled(sessionId, enabled);
+        String programHash = getProgramHash();
+        if (programHash != null) {
+            transcriptService.appendSystemNotice(
+                sessionId,
+                programHash,
+                enabled ? "Tool approvals relaxed" : "Tool approvals restored",
+                enabled ? "Session configured to allow all tools without prompting."
+                        : "Session no longer auto-approves all tool requests."
+            );
+        }
+    }
+
     /**
      * Clear conversation history
      */
@@ -706,16 +736,6 @@ public class QueryService {
         if (messages != null && !messages.isEmpty()) {
             messageStore.clear();
             transcriptService.ensureBackfilledFromReActMessages(programHash, sessionId, messages);
-
-            // Format and set as single message for display
-            String formattedConversation = formatReActConversation(messages, sessionId);
-            PersistedChatMessage displayMsg = new PersistedChatMessage(
-                null, "assistant", formattedConversation,
-                new Timestamp(System.currentTimeMillis()), 0
-            );
-            List<PersistedChatMessage> displayList = new ArrayList<>();
-            displayList.add(displayMsg);
-            messageStore.setMessages(displayList);
 
             // Set the session ID so Edit and other operations work
             sessionManager.setCurrentSessionId(sessionId);
@@ -1018,6 +1038,7 @@ public class QueryService {
         }
 
         String programHash = plugin.getCurrentProgram().getExecutableSHA256();
+        boolean appendTranscriptFallback = !transcriptService.hasEvents(sessionId);
 
         int existingMessageCount = analysisDB.getReActMessages(programHash, sessionId).size();
         int messageOrder = existingMessageCount;
@@ -1028,8 +1049,10 @@ public class QueryService {
             new ghidrassist.apiprovider.ChatMessage("user", userQuery);
         analysisDB.saveReActMessage(programHash, sessionId, messageOrder++,
             "planning", null, userMsg);
-        transcriptService.appendUserMessage(sessionId, programHash, userQuery,
-            new Timestamp(System.currentTimeMillis()));
+        if (appendTranscriptFallback) {
+            transcriptService.appendUserMessage(sessionId, programHash, userQuery,
+                new Timestamp(System.currentTimeMillis()));
+        }
 
         // Save investigation history
         if (investigationHistory != null && !investigationHistory.isEmpty()) {
@@ -1037,8 +1060,10 @@ public class QueryService {
                 new ghidrassist.apiprovider.ChatMessage("assistant", investigationHistory);
             analysisDB.saveReActMessage(programHash, sessionId, messageOrder++,
                 "investigation", iterationNumber, investigationMsg);
-            transcriptService.appendAssistantMessage(sessionId, programHash, investigationHistory,
-                new Timestamp(System.currentTimeMillis()));
+            if (appendTranscriptFallback) {
+                transcriptService.appendAssistantMessage(sessionId, programHash, investigationHistory,
+                    new Timestamp(System.currentTimeMillis()));
+            }
 
             analysisDB.saveReActIterationChunk(programHash, sessionId, iterationNumber,
                 investigationHistory, messageOrder - 1, messageOrder - 1);
@@ -1049,8 +1074,10 @@ public class QueryService {
             new ghidrassist.apiprovider.ChatMessage("assistant", finalResult);
         analysisDB.saveReActMessage(programHash, sessionId, messageOrder++,
             "synthesis", null, finalMsg);
-        transcriptService.appendAssistantMessage(sessionId, programHash, finalResult,
-            new Timestamp(System.currentTimeMillis()));
+        if (appendTranscriptFallback) {
+            transcriptService.appendAssistantMessage(sessionId, programHash, finalResult,
+                new Timestamp(System.currentTimeMillis()));
+        }
     }
 
     private String formatReActConversation(java.util.List<ghidrassist.apiprovider.ChatMessage> messages,
@@ -1264,8 +1291,56 @@ public class QueryService {
         return transcriptService;
     }
 
+    public String renderStreamingAssistantCardPrefix(Timestamp timestamp) {
+        return transcriptService.renderStreamingAssistantCardPrefix(timestamp);
+    }
+
+    public String renderStreamingAssistantCardSuffix() {
+        return transcriptService.renderStreamingAssistantCardSuffix();
+    }
+
+    public void toggleTodoCardExpansion(long eventId) {
+        transcriptService.toggleTodoCard(eventId);
+    }
+
     public void toggleToolGroupExpansion(String correlationId) {
         transcriptService.toggleToolGroupExpansion(correlationId);
+    }
+
+    public void appendTranscriptAssistantMessage(String content) {
+        int sessionId = sessionManager.getCurrentSessionId();
+        String programHash = getProgramHash();
+        if (sessionId == ChatSessionManager.NO_SESSION || programHash == null || content == null || content.isBlank()) {
+            return;
+        }
+        transcriptService.appendAssistantMessage(sessionId, programHash, content, new Timestamp(System.currentTimeMillis()));
+    }
+
+    public void appendReActTodoSnapshot(String summary, List<TodoListManager.Todo> todos, Integer iteration) {
+        int sessionId = sessionManager.getCurrentSessionId();
+        String programHash = getProgramHash();
+        if (sessionId == ChatSessionManager.NO_SESSION || programHash == null) {
+            return;
+        }
+        transcriptService.appendTodoSnapshot(sessionId, programHash, summary, todos, iteration);
+    }
+
+    public void appendReActFinding(String finding, Integer iteration) {
+        int sessionId = sessionManager.getCurrentSessionId();
+        String programHash = getProgramHash();
+        if (sessionId == ChatSessionManager.NO_SESSION || programHash == null || finding == null || finding.isBlank()) {
+            return;
+        }
+        transcriptService.appendFinding(sessionId, programHash, finding, iteration);
+    }
+
+    public void appendReActNotice(String title, String content, Integer iteration, String category) {
+        int sessionId = sessionManager.getCurrentSessionId();
+        String programHash = getProgramHash();
+        if (sessionId == ChatSessionManager.NO_SESSION || programHash == null) {
+            return;
+        }
+        transcriptService.appendIterationNotice(sessionId, programHash, title, content, iteration, category);
     }
 
     public ToolApprovalService getToolApprovalService() {
@@ -1279,25 +1354,46 @@ public class QueryService {
         }
         String providerName = llmApi.getProviderName();
         String modelName = llmApi.getProviderModel();
-        resetContextUsage(providerName, modelName);
-        llmApi.setContextWindowListener(createContextWindowListener(providerName, modelName));
+        long generation = startContextTracking(providerName, modelName);
+        llmApi.setContextWindowListener(createContextWindowListener(providerName, modelName, generation));
     }
 
     public void beginContextTracking(String providerName, String modelName) {
-        resetContextUsage(providerName, modelName);
+        startContextTracking(providerName, modelName, true);
+    }
+
+    private long startContextTracking(String providerName, String modelName) {
+        return startContextTracking(providerName, modelName, true);
+    }
+
+    private long startContextTracking(String providerName, String modelName, boolean notify) {
+        long generation = contextTrackingGeneration.incrementAndGet();
+        activeContextTrackingGeneration = generation;
+        resetContextUsage(providerName, modelName, notify);
+        return generation;
     }
 
     public ContextWindowListener createContextWindowListener(String providerName, String modelName) {
+        return createContextWindowListener(providerName, modelName, activeContextTrackingGeneration);
+    }
+
+    public ContextWindowListener createContextWindowListener(String providerName, String modelName, long generation) {
+        final long listenerGeneration = generation;
         return new ContextWindowListener() {
             @Override
             public void onStatusUpdated(ContextStatus status) {
-                contextUsageSnapshot = ContextUsageSnapshot.fromStatus(providerName, modelName, status,
-                    contextUsageSnapshot.compacted);
+                if (listenerGeneration != activeContextTrackingGeneration) {
+                    return;
+                }
+                contextUsageSnapshot = contextUsageSnapshot.mergeStatus(providerName, modelName, status);
                 notifyContextStatusChanged();
             }
 
             @Override
             public void onContextCompacted(String summary, int originalMessageCount, int finalMessageCount) {
+                if (listenerGeneration != activeContextTrackingGeneration) {
+                    return;
+                }
                 contextUsageSnapshot = contextUsageSnapshot.withCompacted(summary, finalMessageCount);
                 int sessionId = sessionManager.getCurrentSessionId();
                 String programHash = getProgramHash();
@@ -1324,11 +1420,17 @@ public class QueryService {
     }
 
     private void resetContextUsage(String providerName, String modelName) {
+        resetContextUsage(providerName, modelName, true);
+    }
+
+    private void resetContextUsage(String providerName, String modelName, boolean notify) {
         ProviderIdentity identity = resolveCurrentProviderIdentity();
         String resolvedProvider = firstNonBlank(providerName, identity.providerName());
         String resolvedModel = firstNonBlank(modelName, identity.modelName());
         contextUsageSnapshot = ContextUsageSnapshot.empty(resolvedProvider, resolvedModel);
-        notifyContextStatusChanged();
+        if (notify) {
+            notifyContextStatusChanged();
+        }
     }
 
     private ProviderIdentity resolveCurrentProviderIdentity() {
@@ -1379,11 +1481,14 @@ public class QueryService {
         private final Integer maxTokens;
         private final Integer messageCount;
         private final Integer thresholdTokens;
+        private final Integer peakTokens;
+        private final Integer peakMessageCount;
         private final boolean compacted;
         private final String note;
 
         private ContextUsageSnapshot(String providerName, String modelName, Integer currentTokens,
                                      Integer maxTokens, Integer messageCount, Integer thresholdTokens,
+                                     Integer peakTokens, Integer peakMessageCount,
                                      boolean compacted, String note) {
             this.providerName = providerName;
             this.modelName = modelName;
@@ -1391,6 +1496,8 @@ public class QueryService {
             this.maxTokens = maxTokens;
             this.messageCount = messageCount;
             this.thresholdTokens = thresholdTokens;
+            this.peakTokens = peakTokens;
+            this.peakMessageCount = peakMessageCount;
             this.compacted = compacted;
             this.note = note;
         }
@@ -1400,7 +1507,7 @@ public class QueryService {
         }
 
         private static ContextUsageSnapshot empty(String providerName, String modelName) {
-            return new ContextUsageSnapshot(providerName, modelName, null, null, null, null,
+            return new ContextUsageSnapshot(providerName, modelName, null, null, null, null, null, null,
                 false, "No active context window data");
         }
 
@@ -1413,8 +1520,30 @@ public class QueryService {
                 status != null ? status.getMaxTokens() : null,
                 status != null ? status.getMessageCount() : null,
                 status != null ? status.getCompressionThresholdTokens() : null,
+                status != null ? status.getCurrentTokens() : null,
+                status != null ? status.getMessageCount() : null,
                 compacted,
                 status != null ? status.getStatusMessage() : "No active context window data"
+            );
+        }
+
+        private ContextUsageSnapshot mergeStatus(String providerName, String modelName, ContextStatus status) {
+            if (status == null) {
+                return withProvider(providerName, modelName);
+            }
+            Integer newCurrentTokens = status.getCurrentTokens();
+            Integer newMessageCount = status.getMessageCount();
+            return new ContextUsageSnapshot(
+                providerName != null && !providerName.isBlank() ? providerName : this.providerName,
+                modelName != null && !modelName.isBlank() ? modelName : this.modelName,
+                newCurrentTokens,
+                status.getMaxTokens(),
+                newMessageCount,
+                status.getCompressionThresholdTokens(),
+                maxNullable(this.peakTokens, newCurrentTokens),
+                maxNullable(this.peakMessageCount, newMessageCount),
+                this.compacted,
+                status.getStatusMessage()
             );
         }
 
@@ -1426,6 +1555,8 @@ public class QueryService {
                 maxTokens,
                 finalMessageCount != null ? finalMessageCount : messageCount,
                 thresholdTokens,
+                peakTokens,
+                maxNullable(peakMessageCount, finalMessageCount != null ? finalMessageCount : messageCount),
                 true,
                 note
             );
@@ -1439,6 +1570,8 @@ public class QueryService {
                 maxTokens,
                 messageCount,
                 thresholdTokens,
+                peakTokens,
+                peakMessageCount,
                 compacted,
                 note
             );
@@ -1452,17 +1585,37 @@ public class QueryService {
             }
             String compactedLabel = compacted ? " | compacted" : "";
             String messageLabel = messageCount != null ? " | " + messageCount + " msgs" : "";
+            String peakLabel = "";
+            if ((peakTokens != null && !peakTokens.equals(currentTokens))
+                    || (peakMessageCount != null && !peakMessageCount.equals(messageCount))) {
+                peakLabel = String.format(
+                    " | peak %s tokens%s",
+                    peakTokens != null ? peakTokens : "?",
+                    peakMessageCount != null ? " / " + peakMessageCount + " msgs" : ""
+                );
+            }
             String thresholdLabel = thresholdTokens != null ? " | threshold " + thresholdTokens : "";
             return String.format(
-                "Model: %s / %s | context %d/%d tokens%s%s%s",
+                "Model: %s / %s | context %d/%d tokens%s%s%s%s",
                 provider,
                 model,
                 currentTokens,
                 maxTokens,
                 messageLabel,
+                peakLabel,
                 thresholdLabel,
                 compactedLabel
             );
+        }
+
+        private Integer maxNullable(Integer a, Integer b) {
+            if (a == null) {
+                return b;
+            }
+            if (b == null) {
+                return a;
+            }
+            return Math.max(a, b);
         }
     }
 

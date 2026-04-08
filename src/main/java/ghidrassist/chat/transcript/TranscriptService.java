@@ -2,6 +2,7 @@ package ghidrassist.chat.transcript;
 
 import com.google.gson.JsonObject;
 import ghidra.util.Msg;
+import ghidrassist.agent.react.TodoListManager;
 import ghidrassist.chat.PersistedChatMessage;
 import ghidrassist.tools.api.Tool;
 import ghidrassist.tools.api.ToolExecutionObserver;
@@ -196,6 +197,26 @@ public class TranscriptService implements ToolExecutionObserver {
             null, null, null, null, true);
     }
 
+    public void appendTodoSnapshot(int sessionId, String programHash, String summary,
+                                   List<TodoListManager.Todo> todos, Integer iteration) {
+        appendEvent(sessionId, programHash, null, null, TranscriptEventKind.TODO_UPDATED,
+            "system", "Investigation Tasks", summary, summary,
+            buildTodoMetadata(summary, todos, iteration), null, null, null, null, true);
+    }
+
+    public void appendFinding(int sessionId, String programHash, String finding, Integer iteration) {
+        appendEvent(sessionId, programHash, null, null, TranscriptEventKind.FINDING_ADDED,
+            "assistant", "Finding", finding, finding,
+            buildFindingMetadata(iteration), null, null, null, null, true);
+    }
+
+    public void appendIterationNotice(int sessionId, String programHash, String title, String content,
+                                      Integer iteration, String category) {
+        appendEvent(sessionId, programHash, null, null, TranscriptEventKind.ITERATION_NOTICE,
+            "system", title, content, content,
+            buildIterationNoticeMetadata(iteration, category), null, null, null, null, true);
+    }
+
     public synchronized String renderSessionHtml(int sessionId) {
         return renderer.renderDocument(loadEvents(sessionId));
     }
@@ -204,8 +225,20 @@ public class TranscriptService implements ToolExecutionObserver {
         return renderer.renderFragment(loadEvents(sessionId));
     }
 
+    public synchronized String renderStreamingAssistantCardPrefix(Timestamp timestamp) {
+        return renderer.renderStreamingAssistantCardPrefix(timestamp);
+    }
+
+    public synchronized String renderStreamingAssistantCardSuffix() {
+        return renderer.renderStreamingAssistantCardSuffix();
+    }
+
     public synchronized void toggleToolGroupExpansion(String correlationId) {
         renderer.toggleToolGroup(correlationId);
+    }
+
+    public synchronized void toggleTodoCard(long eventId) {
+        renderer.toggleTodoCard(eventId);
     }
 
     public synchronized List<TranscriptEvent> loadEvents(int sessionId) {
@@ -652,6 +685,65 @@ public class TranscriptService implements ToolExecutionObserver {
         }
         if (scope != null) {
             metadata.addProperty("scope", scope);
+        }
+        return metadata.toString();
+    }
+
+    private String buildTodoMetadata(String summary, List<TodoListManager.Todo> todos, Integer iteration) {
+        JsonObject metadata = new JsonObject();
+        if (summary != null) {
+            metadata.addProperty("summary", summary);
+        }
+        if (iteration != null) {
+            metadata.addProperty("iteration", iteration);
+        }
+        com.google.gson.JsonArray todoArray = new com.google.gson.JsonArray();
+        int pending = 0;
+        int inProgress = 0;
+        int complete = 0;
+        if (todos != null) {
+            for (TodoListManager.Todo todo : todos) {
+                if (todo == null) {
+                    continue;
+                }
+                JsonObject item = new JsonObject();
+                item.addProperty("task", todo.getTask());
+                item.addProperty("status", todo.getStatus().name());
+                if (todo.getEvidence() != null) {
+                    item.addProperty("evidence", todo.getEvidence());
+                }
+                item.addProperty("priority", todo.getPriority());
+                todoArray.add(item);
+                switch (todo.getStatus()) {
+                    case PENDING -> pending++;
+                    case IN_PROGRESS -> inProgress++;
+                    case COMPLETE -> complete++;
+                }
+            }
+        }
+        metadata.add("todos", todoArray);
+        metadata.addProperty("pending_count", pending);
+        metadata.addProperty("in_progress_count", inProgress);
+        metadata.addProperty("complete_count", complete);
+        metadata.addProperty("total_count", pending + inProgress + complete);
+        return metadata.toString();
+    }
+
+    private String buildFindingMetadata(Integer iteration) {
+        JsonObject metadata = new JsonObject();
+        if (iteration != null) {
+            metadata.addProperty("iteration", iteration);
+        }
+        return metadata.toString();
+    }
+
+    private String buildIterationNoticeMetadata(Integer iteration, String category) {
+        JsonObject metadata = new JsonObject();
+        if (iteration != null) {
+            metadata.addProperty("iteration", iteration);
+        }
+        if (category != null && !category.isBlank()) {
+            metadata.addProperty("category", category);
         }
         return metadata.toString();
     }

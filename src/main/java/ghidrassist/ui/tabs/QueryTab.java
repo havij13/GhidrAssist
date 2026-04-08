@@ -46,6 +46,7 @@ public class QueryTab extends JPanel {
     private JCheckBox useRAGCheckBox;
     private JCheckBox useMCPCheckBox;
     private JCheckBox useAgenticCheckBox;
+    private JCheckBox acceptAllToolsCheckBox;
     private JButton submitButton;
     private JButton newButton;
     private JButton deleteButton;
@@ -84,6 +85,8 @@ public class QueryTab extends JPanel {
     private String lastPendingHtml = "<span></span>";
     private boolean documentCorrupted = false;
     private String currentStreamingPrefixHtml = "";
+    private String currentStreamingBodyPrefixHtml = "";
+    private String currentStreamingBodySuffixHtml = "";
     private StreamingScrollManager scrollManager;
     private JScrollPane responseScrollPane;
 
@@ -123,6 +126,11 @@ public class QueryTab extends JPanel {
         useAgenticCheckBox.setEnabled(false); // Enabled only when MCP is available
         useAgenticCheckBox.setToolTipText("Enable autonomous ReAct-style analysis with systematic tool use");
 
+        acceptAllToolsCheckBox = new JCheckBox("Accept All Tools");
+        acceptAllToolsCheckBox.setSelected(false);
+        acceptAllToolsCheckBox.setEnabled(true);
+        acceptAllToolsCheckBox.setToolTipText("Allow all tool calls for the active chat session without prompting");
+
         // responseTextPane already initialized in constructor
 
         queryTextArea = new JTextArea();
@@ -140,7 +148,8 @@ public class QueryTab extends JPanel {
         contextStatusLabel.setFont(new Font("Monospaced", Font.PLAIN, 11));
         approvalPanel = new JPanel(new BorderLayout(6, 6));
         approvalSummaryLabel = new JLabel(" ");
-        approvalArgsArea = new JTextArea(3, 40);
+        approvalSummaryLabel.setFont(new Font("SansSerif", Font.PLAIN, 11));
+        approvalArgsArea = new JTextArea(2, 40);
         approvalArgsArea.setEditable(false);
         approvalArgsArea.setLineWrap(true);
         approvalArgsArea.setWrapStyleWord(true);
@@ -148,6 +157,19 @@ public class QueryTab extends JPanel {
         approveOnceButton = new JButton("Allow Once");
         approveSessionButton = new JButton("Allow for Session");
         denyApprovalButton = new JButton("Deny");
+        Font compactButtonFont = new Font("SansSerif", Font.PLAIN, 11);
+        Insets compactButtonInsets = new Insets(4, 8, 4, 8);
+        approveOnceButton.setFont(compactButtonFont);
+        approveSessionButton.setFont(compactButtonFont);
+        denyApprovalButton.setFont(compactButtonFont);
+        approveOnceButton.setMargin(compactButtonInsets);
+        approveSessionButton.setMargin(compactButtonInsets);
+        denyApprovalButton.setMargin(compactButtonInsets);
+        approvalPanel.setBorder(BorderFactory.createCompoundBorder(
+            BorderFactory.createLineBorder(new Color(180, 60, 60), 1),
+            BorderFactory.createEmptyBorder(4, 6, 6, 6)
+        ));
+        approvalArgsArea.setBorder(BorderFactory.createEmptyBorder(4, 4, 4, 4));
         approvalPanel.setVisible(false);
 
         // Initialize markdown edit area for edit mode
@@ -190,6 +212,7 @@ public class QueryTab extends JPanel {
         checkboxPanel.add(useRAGCheckBox);
         checkboxPanel.add(useMCPCheckBox);
         checkboxPanel.add(useAgenticCheckBox);
+        checkboxPanel.add(acceptAllToolsCheckBox);
         topPanel.add(checkboxPanel, BorderLayout.CENTER);
 
         JPanel editPanel = new JPanel(new FlowLayout(FlowLayout.RIGHT));
@@ -198,15 +221,17 @@ public class QueryTab extends JPanel {
 
         JPanel statusPanel = new JPanel(new BorderLayout(0, 6));
         statusPanel.add(contextStatusLabel, BorderLayout.WEST);
-        JPanel approvalButtonPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 6, 0));
+        topPanel.add(statusPanel, BorderLayout.SOUTH);
+
+        JPanel approvalButtonPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 6, 4));
         approvalButtonPanel.add(approveOnceButton);
         approvalButtonPanel.add(approveSessionButton);
         approvalButtonPanel.add(denyApprovalButton);
         approvalPanel.add(approvalSummaryLabel, BorderLayout.NORTH);
-        approvalPanel.add(new JScrollPane(approvalArgsArea), BorderLayout.CENTER);
+        JScrollPane approvalArgsScrollPane = new JScrollPane(approvalArgsArea);
+        approvalArgsScrollPane.setBorder(BorderFactory.createEmptyBorder());
+        approvalPanel.add(approvalArgsScrollPane, BorderLayout.CENTER);
         approvalPanel.add(approvalButtonPanel, BorderLayout.SOUTH);
-        statusPanel.add(approvalPanel, BorderLayout.SOUTH);
-        topPanel.add(statusPanel, BorderLayout.SOUTH);
 
         add(topPanel, BorderLayout.NORTH);
 
@@ -231,9 +256,13 @@ public class QueryTab extends JPanel {
         bottomPanel.add(chatHistoryScrollPane, BorderLayout.NORTH);
         bottomPanel.add(queryScrollPane, BorderLayout.CENTER);
 
-        // Create main split pane between response and (chat history + query)
+        JPanel responseAreaPanel = new JPanel(new BorderLayout());
+        responseAreaPanel.add(contentPanel, BorderLayout.CENTER);
+        responseAreaPanel.add(approvalPanel, BorderLayout.SOUTH);
+
+        // Create main split pane between response/approval and (chat history + query)
         JSplitPane mainSplitPane = new JSplitPane(JSplitPane.VERTICAL_SPLIT,
-            contentPanel, bottomPanel);
+            responseAreaPanel, bottomPanel);
         mainSplitPane.setResizeWeight(0.7); // Give more space to response area
 
         // Create inner split pane for chat history and query area
@@ -300,6 +329,8 @@ public class QueryTab extends JPanel {
             currentPendingApprovalRequestId, "allow_session"));
         denyApprovalButton.addActionListener(e -> controller.handleApprovalDecision(
             currentPendingApprovalRequestId, "deny"));
+        acceptAllToolsCheckBox.addActionListener(e ->
+            controller.handleAcceptAllToolsChanged(acceptAllToolsCheckBox.isSelected()));
 
         // ESC key discards edits and returns to view mode
         markdownEditArea.getInputMap(JComponent.WHEN_FOCUSED)
@@ -426,6 +457,10 @@ public class QueryTab extends JPanel {
      * @param prefixHtml Pre-rendered HTML for conversation history (may be empty)
      */
     public void initializeForStreaming(String prefixHtml) {
+        initializeForStreaming(prefixHtml, "", "");
+    }
+
+    public void initializeForStreaming(String prefixHtml, String bodyPrefixHtml, String bodySuffixHtml) {
         Runnable initializeUi = () -> {
             // Capture scroll state BEFORE any modifications
             boolean wasAtBottom = scrollManager.isAtBottom();
@@ -436,6 +471,8 @@ public class QueryTab extends JPanel {
             lastPendingHtml = "<span></span>";
             documentCorrupted = false;
             currentStreamingPrefixHtml = (prefixHtml != null && !prefixHtml.isEmpty()) ? prefixHtml : "";
+            currentStreamingBodyPrefixHtml = bodyPrefixHtml != null ? bodyPrefixHtml : "";
+            currentStreamingBodySuffixHtml = bodySuffixHtml != null ? bodySuffixHtml : "";
 
             // Switch to HTML mode
             responseTextPane.setContentType("text/html");
@@ -444,11 +481,12 @@ public class QueryTab extends JPanel {
 
             // Build initial HTML with two-div structure
             String initialHtml = String.format(
-                "<html><head><style>%s</style></head><body>%s" +
+                "<html><head><style>%s</style></head><body>%s%s" +
                 "<div id=\"committed\"></div>" +
                 "<div id=\"pending\"><span></span></div>" +
-                "</body></html>",
-                getStreamingCSS(), currentStreamingPrefixHtml);
+                "%s</body></html>",
+                getStreamingCSS(), currentStreamingPrefixHtml, currentStreamingBodyPrefixHtml,
+                currentStreamingBodySuffixHtml);
 
             responseTextPane.setText(initialHtml);
             responseDocument = responseTextPane.getStyledDocument();
@@ -568,7 +606,9 @@ public class QueryTab extends JPanel {
         if (fullHtml != null) {
             String wrapped = "<html><head><style>" + getStreamingCSS() + "</style></head><body>" +
                     currentStreamingPrefixHtml +
+                    currentStreamingBodyPrefixHtml +
                     fullHtml + "</body></html>";
+            wrapped = wrapped.replace("</body></html>", currentStreamingBodySuffixHtml + "</body></html>");
             responseTextPane.setContentType("text/html");
             responseTextPane.setEditorKit(new HTMLEditorKit());
             responseTextPane.setText(wrapped);
@@ -579,8 +619,10 @@ public class QueryTab extends JPanel {
     private void rebuildDocument() {
         String html = "<html><head><style>" + getStreamingCSS() + "</style></head><body>" +
                 currentStreamingPrefixHtml +
+                currentStreamingBodyPrefixHtml +
                 accumulatedCommittedHtml.toString() +
                 lastPendingHtml +
+                currentStreamingBodySuffixHtml +
                 "</body></html>";
         responseTextPane.setContentType("text/html");
         responseTextPane.setEditorKit(new HTMLEditorKit());
@@ -605,8 +647,10 @@ public class QueryTab extends JPanel {
         responseTextPane.setEditorKit(new HTMLEditorKit());
         String repairedHtml = "<html><head><style>" + getStreamingCSS() + "</style></head><body>" +
                 currentStreamingPrefixHtml +
+                currentStreamingBodyPrefixHtml +
                 "<div id=\"committed\">" + accumulatedCommittedHtml + "</div>" +
                 "<div id=\"pending\">" + lastPendingHtml + "</div>" +
+                currentStreamingBodySuffixHtml +
                 "</body></html>";
         responseTextPane.setText(repairedHtml);
 
@@ -1174,11 +1218,26 @@ public class QueryTab extends JPanel {
                 pendingApproval.getToolSource()
             ));
             approvalArgsArea.setText(pendingApproval.getArgsPreview());
+            approvalArgsArea.setCaretPosition(0);
             approvalPanel.setVisible(true);
             approvalPanel.revalidate();
             approvalPanel.repaint();
         };
 
+        if (SwingUtilities.isEventDispatchThread()) {
+            updateUi.run();
+        } else {
+            SwingUtilities.invokeLater(updateUi);
+        }
+    }
+
+    public void setAcceptAllToolsState(boolean enabled, boolean selected) {
+        Runnable updateUi = () -> {
+            // Keep this interactive like the MCP/ReAct toggles. The controller
+            // will create a session on demand when the user enables it.
+            acceptAllToolsCheckBox.setEnabled(true);
+            acceptAllToolsCheckBox.setSelected(selected);
+        };
         if (SwingUtilities.isEventDispatchThread()) {
             updateUi.run();
         } else {

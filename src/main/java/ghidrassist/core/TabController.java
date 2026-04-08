@@ -180,7 +180,12 @@ public class TabController {
         });
         queryService.setPendingApprovalConsumer(pendingApproval -> {
             if (this.queryTab != null) {
-                SwingUtilities.invokeLater(() -> this.queryTab.setPendingApproval(pendingApproval));
+                SwingUtilities.invokeLater(() -> {
+                    this.queryTab.setPendingApproval(pendingApproval);
+                    this.queryTab.setAcceptAllToolsState(
+                        queryService.hasActiveProgram(),
+                        queryService.isAcceptAllToolsEnabled());
+                });
             }
         });
         queryService.setTranscriptUpdateConsumer(sessionId -> {
@@ -198,6 +203,9 @@ public class TabController {
         if (this.queryTab != null) {
             this.queryTab.setContextStatus(queryService.getContextStatusText());
             this.queryTab.setPendingApproval(queryService.getCurrentPendingApprovalView());
+            this.queryTab.setAcceptAllToolsState(
+                queryService.hasActiveProgram(),
+                queryService.isAcceptAllToolsEnabled());
         }
     }
     public void setActionsTab(ActionsTab tab) { this.actionsTab = tab; }
@@ -1272,6 +1280,28 @@ public class TabController {
                 "That approval request is no longer pending.");
         }
     }
+
+    public void handleAcceptAllToolsChanged(boolean enabled) {
+        if (enabled && queryService.getCurrentSessionId() == -1 && queryService.hasActiveProgram()) {
+            int newSessionId = queryService.createNewChatSession();
+            if (newSessionId != -1) {
+                refreshChatHistory();
+                java.util.List<ghidrassist.AnalysisDB.ChatSession> sessions = queryService.getChatSessions();
+                for (int i = 0; i < sessions.size(); i++) {
+                    if (sessions.get(i).getId() == newSessionId) {
+                        queryTab.selectChatSession(i);
+                        break;
+                    }
+                }
+            }
+        }
+        queryService.setAcceptAllToolsEnabled(enabled);
+        if (queryTab != null) {
+            queryTab.setAcceptAllToolsState(
+                queryService.hasActiveProgram(),
+                queryService.isAcceptAllToolsEnabled());
+        }
+    }
     
     public void handleHyperlinkEvent(HyperlinkEvent e) {
         if (e.getEventType() == HyperlinkEvent.EventType.ACTIVATED) {
@@ -1296,6 +1326,14 @@ public class TabController {
                 } else if (desc.startsWith("tool-expand:") || desc.startsWith("tool-collapse:")) {
                     String correlationId = desc.substring(desc.indexOf(':') + 1);
                     queryService.toggleToolGroupExpansion(correlationId);
+                    if (currentStreamingRenderer != null && queryTab != null) {
+                        queryTab.updateStreamingPrefix(queryService.getConversationPrefixHtml());
+                    } else {
+                        renderCurrentChatSession();
+                    }
+                } else if (desc.startsWith("todo-expand:") || desc.startsWith("todo-collapse:")) {
+                    long eventId = Long.parseLong(desc.substring(desc.indexOf(':') + 1));
+                    queryService.toggleTodoCardExpansion(eventId);
                     if (currentStreamingRenderer != null && queryTab != null) {
                         queryTab.updateStreamingPrefix(queryService.getConversationPrefixHtml());
                     } else {
@@ -1767,6 +1805,10 @@ public class TabController {
         queryTab.setMarkdownSource(queryService.getConversationHistory());
         queryTab.setEditEnabled(queryService.isCurrentSessionEditable());
         queryTab.setContextStatus(queryService.getContextStatusText());
+        queryTab.setAcceptAllToolsState(
+            queryService.hasActiveProgram(),
+            queryService.isAcceptAllToolsEnabled());
+        queryTab.setPendingApproval(queryService.getCurrentPendingApprovalView());
     }
 
     private String sanitizeAssistantResponseForTranscript(String rawResponse) {
@@ -2013,15 +2055,19 @@ public class TabController {
         return new LlmApi.LlmResponseHandler() {
             private final StringBuilder responseBuffer = new StringBuilder();
             private final Object bufferLock = new Object();
+            private Timestamp streamingAssistantTimestamp;
 
             @Override
             public void onStart() {
                 synchronized (bufferLock) {
                     responseBuffer.setLength(0);
                 }
+                streamingAssistantTimestamp = new Timestamp(System.currentTimeMillis());
 
                 // Render existing conversation history as prefix
                 String existingHtml = queryService.getConversationPrefixHtml();
+                String assistantCardPrefix = queryService.renderStreamingAssistantCardPrefix(streamingAssistantTimestamp);
+                String assistantCardSuffix = queryService.renderStreamingAssistantCardSuffix();
 
                 // Create streaming renderer with callback to update UI
                 // Note: StreamingMarkdownRenderer already calls invokeLater, so callback runs on EDT
@@ -2032,7 +2078,8 @@ public class TabController {
                 currentStreamingRenderer.setConversationPrefix(existingHtml);
 
                 // Initialize streaming display with conversation history
-                SwingUtilities.invokeLater(() -> queryTab.initializeForStreaming(existingHtml));
+                SwingUtilities.invokeLater(() ->
+                    queryTab.initializeForStreaming(existingHtml, assistantCardPrefix, assistantCardSuffix));
             }
 
             @Override
@@ -2172,13 +2219,19 @@ public class TabController {
     
     private ghidrassist.agent.react.ReActProgressHandler createReActProgressHandler(final StringBuilder[] historyContainer) {
         return new ghidrassist.agent.react.ReActProgressHandler() {
-            private final StringBuilder chronologicalHistory = new StringBuilder();  // Single sequential history
-            private final Object historyLock = new Object();  // Protect concurrent access
+            private final StringBuilder chronologicalHistory = new StringBuilder();
+            private final Object historyLock = new Object();
             private String currentIterationOutput = "";
-            private final StringBuilder synthesisBuffer = new StringBuilder();  // Separate buffer for synthesis streaming
+            private final StringBuilder synthesisBuffer = new StringBuilder();
             private boolean synthesisStarted = false;
-            private int lastIterationSeen = -1;  // Start at -1 so iteration 0 triggers header
-            private StreamingMarkdownRenderer synthesisRenderer = null;  // Used for synthesis phase streaming
+            private int lastIterationSeen = -1;
+            private Timestamp synthesisAssistantTimestamp;
+
+            private void appendHistoryLine(String line) {
+                synchronized (historyLock) {
+                    chronologicalHistory.append(line).append("\n\n");
+                }
+            }
 
             @Override
             public void onStart(String objective) {
@@ -2193,17 +2246,17 @@ public class TabController {
                     synthesisStarted = false;
                 }
 
-                // Initialize streaming display
-                SwingUtilities.invokeLater(() -> queryTab.initializeForStreaming(""));
-
-                // Render initial state
-                renderCurrentContent();
+                queryService.appendReActNotice(
+                    "Agentic Investigation",
+                    "Planning investigation steps for: " + objective,
+                    null,
+                    "react_start");
+                SwingUtilities.invokeLater(() -> renderCurrentChatSession());
             }
 
             @Override
             public void onThought(String thought, int iteration) {
                 synchronized (historyLock) {
-                    // If this is a new iteration, archive the previous iteration
                     if (iteration > lastIterationSeen) {
                         if (!currentIterationOutput.isEmpty()) {
                             chronologicalHistory.append(currentIterationOutput).append("\n\n");
@@ -2215,18 +2268,35 @@ public class TabController {
                     }
                     currentIterationOutput = thought;
                 }
-                // Render immediately for thought updates (they're discrete events)
-                renderCurrentContent();
             }
 
             @Override
             public void onAction(String toolName, com.google.gson.JsonObject args) {
-                // Actions are shown via streaming thought output
+                // Tool lifecycle is rendered from transcript observer events.
             }
 
             @Override
             public void onObservation(String toolName, String result) {
-                // Observations are shown via streaming thought output
+                // Tool lifecycle is rendered from transcript observer events.
+            }
+
+            @Override
+            public void onIterationStarted(int iteration, String activeTask) {
+                appendHistoryLine("### Iteration " + iteration);
+                if (activeTask != null && !activeTask.isBlank()) {
+                    appendHistoryLine("**Task**: " + activeTask);
+                    queryService.appendReActNotice(
+                        "Iteration " + iteration,
+                        "Working on: " + activeTask,
+                        iteration,
+                        "iteration_start");
+                } else {
+                    queryService.appendReActNotice(
+                        "Iteration " + iteration,
+                        "Continuing investigation",
+                        iteration,
+                        "iteration_start");
+                }
             }
 
             @Override
@@ -2238,13 +2308,15 @@ public class TabController {
                     }
                     chronologicalHistory.append("💡 **Finding**: ").append(finding).append("\n\n");
                 }
-                renderCurrentContent();
+                queryService.appendReActFinding(finding, lastIterationSeen > 0 ? lastIterationSeen : null);
             }
 
             @Override
             public void onComplete(ghidrassist.agent.react.ReActResult result) {
-                // Clean up synthesis renderer if used
-                synthesisRenderer = null;
+                if (currentStreamingRenderer != null) {
+                    currentStreamingRenderer.onStreamComplete();
+                    currentStreamingRenderer = null;
+                }
 
                 synchronized (historyLock) {
                     if (!currentIterationOutput.isEmpty()) {
@@ -2270,21 +2342,31 @@ public class TabController {
 
                     historyContainer[0] = chronologicalHistory;
                 }
-
-                // Do a final render immediately to ensure complete content is shown
-                renderCurrentContent();
+                queryService.appendTranscriptAssistantMessage(result.getAnswer());
+                queryService.appendReActNotice(
+                    "Investigation Complete",
+                    String.format("Status: %s | Iterations: %d | Tool calls: %d",
+                        result.isSuccess() ? "SUCCESS" : result.getStatus(),
+                        result.getIterationCount(),
+                        result.getToolCallCount()),
+                    null,
+                    "completion");
             }
 
             @Override
             public void onError(Throwable error) {
-                // Clean up synthesis renderer
-                synthesisRenderer = null;
+                if (currentStreamingRenderer != null) {
+                    currentStreamingRenderer = null;
+                }
 
                 synchronized (historyLock) {
                     chronologicalHistory.append("\n\n❌ **ERROR**: ").append(error.getMessage()).append("\n");
                 }
-                // Render error immediately
-                renderCurrentContent();
+                queryService.appendReActNotice(
+                    "Investigation Error",
+                    error.getMessage(),
+                    lastIterationSeen > 0 ? lastIterationSeen : null,
+                    "error");
             }
 
             @Override
@@ -2294,22 +2376,27 @@ public class TabController {
 
             @Override
             public void onIterationWarning(int remaining) {
-                synchronized (historyLock) {
-                    chronologicalHistory.append("⚠️ *").append(remaining).append(" iteration(s) remaining*\n\n");
-                }
-                renderCurrentContent();
+                appendHistoryLine("⚠️ *" + remaining + " iteration(s) remaining*");
+                queryService.appendReActNotice(
+                    "Iteration Budget",
+                    remaining + " iteration(s) remaining",
+                    lastIterationSeen > 0 ? lastIterationSeen : null,
+                    "iteration_warning");
             }
 
             @Override
             public void onToolCallWarning(int remaining) {
-                synchronized (historyLock) {
-                    chronologicalHistory.append("⚠️ *").append(remaining).append(" tool call(s) remaining*\n\n");
-                }
-                renderCurrentContent();
+                appendHistoryLine("⚠️ *" + remaining + " tool call(s) remaining*");
+                queryService.appendReActNotice(
+                    "Tool Budget",
+                    remaining + " tool call(s) remaining",
+                    lastIterationSeen > 0 ? lastIterationSeen : null,
+                    "tool_warning");
             }
 
             @Override
-            public void onTodosUpdated(String todosFormatted) {
+            public void onTodosUpdated(String todosFormatted, List<ghidrassist.agent.react.TodoListManager.Todo> todos,
+                                       String compactSummary) {
                 synchronized (historyLock) {
                     if (!currentIterationOutput.isEmpty()) {
                         chronologicalHistory.append(currentIterationOutput).append("\n\n");
@@ -2319,7 +2406,10 @@ public class TabController {
                     chronologicalHistory.append(todosFormatted).append("\n\n");
                     chronologicalHistory.append("---\n\n");
                 }
-                renderCurrentContent();
+                queryService.appendReActTodoSnapshot(
+                    compactSummary != null ? compactSummary : todosFormatted,
+                    todos,
+                    lastIterationSeen > 0 ? lastIterationSeen : null);
             }
 
             @Override
@@ -2328,16 +2418,18 @@ public class TabController {
                     chronologicalHistory.append("📝 **Summarizing context...**\n\n");
                     chronologicalHistory.append("```\n").append(summary).append("\n```\n\n");
                 }
-                renderCurrentContent();
+                queryService.appendReActNotice(
+                    "Context Summary",
+                    summary,
+                    lastIterationSeen > 0 ? lastIterationSeen : null,
+                    "context_summary");
             }
 
             @Override
             public void onSynthesisChunk(String chunk) {
                 String delta;
                 synchronized (historyLock) {
-                    // Add synthesis header on first chunk
                     if (!synthesisStarted) {
-                        // Archive any remaining iteration output
                         if (!currentIterationOutput.isEmpty()) {
                             chronologicalHistory.append(currentIterationOutput).append("\n\n");
                             currentIterationOutput = "";
@@ -2345,69 +2437,34 @@ public class TabController {
                         chronologicalHistory.append("---\n\n");
                         chronologicalHistory.append("## 🎯 Final Analysis\n\n");
                         synthesisStarted = true;
-
-                        // Create streaming renderer for synthesis phase with committed history as prefix
-                        String prefixHtml = markdownHelper.markdownToHtmlFragment(chronologicalHistory.toString());
-                        synthesisRenderer = new StreamingMarkdownRenderer(
+                        synthesisAssistantTimestamp = new Timestamp(System.currentTimeMillis());
+                        String prefixHtml = queryService.getConversationPrefixHtml();
+                        String assistantCardPrefix =
+                            queryService.renderStreamingAssistantCardPrefix(synthesisAssistantTimestamp);
+                        String assistantCardSuffix = queryService.renderStreamingAssistantCardSuffix();
+                        currentStreamingRenderer = new StreamingMarkdownRenderer(
                             update -> queryTab.applyRenderUpdate(update),
-                            markdownHelper
-                        );
-                        synthesisRenderer.setConversationPrefix(prefixHtml);
-                        SwingUtilities.invokeLater(() -> queryTab.initializeForStreaming(prefixHtml));
+                            markdownHelper);
+                        currentStreamingRenderer.setConversationPrefix(prefixHtml);
+                        SwingUtilities.invokeLater(() ->
+                            queryTab.initializeForStreaming(prefixHtml, assistantCardPrefix, assistantCardSuffix));
                     }
 
-                    // Handle cumulative vs delta responses - extract only new content
                     String currentBuffer = synthesisBuffer.toString();
                     if (chunk.startsWith(currentBuffer)) {
-                        // Cumulative response - extract delta
                         delta = chunk.substring(currentBuffer.length());
                         if (!delta.isEmpty()) {
                             synthesisBuffer.append(delta);
                         }
                     } else {
-                        // Delta response - append directly
                         delta = chunk;
                         synthesisBuffer.append(delta);
                     }
                 }
 
-                // Send delta to streaming renderer for incremental processing
-                if (!delta.isEmpty() && synthesisRenderer != null) {
-                    synthesisRenderer.onChunkReceived(delta);
+                if (!delta.isEmpty() && currentStreamingRenderer != null) {
+                    currentStreamingRenderer.onChunkReceived(delta);
                 }
-            }
-
-            /**
-             * Render the current content state to the UI.
-             * Used for discrete event updates (not during synthesis streaming).
-             */
-            private void renderCurrentContent() {
-                final String content;
-                synchronized (historyLock) {
-                    StringBuilder display = new StringBuilder();
-                    display.append(chronologicalHistory);
-
-                    // Include current iteration output if present
-                    if (!currentIterationOutput.isEmpty()) {
-                        display.append(currentIterationOutput).append("\n\n");
-                    }
-
-                    // Include synthesis buffer if streaming (only if not using streaming renderer)
-                    if (synthesisBuffer.length() > 0 && synthesisRenderer == null) {
-                        display.append(synthesisBuffer);
-                    }
-
-                    content = display.toString();
-                }
-
-                if (content.isEmpty()) {
-                    return;
-                }
-
-                SwingUtilities.invokeLater(() -> {
-                    String html = markdownHelper.markdownToHtml(content);
-                    queryTab.setResponseText(html);
-                });
             }
         };
     }

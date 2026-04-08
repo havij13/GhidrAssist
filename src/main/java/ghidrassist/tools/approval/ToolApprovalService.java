@@ -19,6 +19,7 @@ import java.util.concurrent.ConcurrentHashMap;
  * Session-scoped deterministic approval engine for tool execution.
  */
 public class ToolApprovalService {
+    public static final String TOOL_NAME_ALL = "*";
     public static final String SCOPE_SESSION = "session";
     public static final String DECISION_ALLOW_ONCE = "allow_once";
     public static final String DECISION_ALLOW_SESSION = "allow_session";
@@ -221,19 +222,39 @@ public class ToolApprovalService {
     private boolean hasSessionGrant(int sessionId, String toolName) {
         String sql = """
             SELECT 1 FROM GHChatApprovalGrants
-            WHERE session_id = ? AND tool_name = ? AND scope = ?
+            WHERE session_id = ? AND tool_name IN (?, ?) AND scope = ?
             LIMIT 1
         """;
         try (PreparedStatement stmt = connection.prepareStatement(sql)) {
             stmt.setInt(1, sessionId);
             stmt.setString(2, toolName);
-            stmt.setString(3, SCOPE_SESSION);
+            stmt.setString(3, TOOL_NAME_ALL);
+            stmt.setString(4, SCOPE_SESSION);
             ResultSet rs = stmt.executeQuery();
             return rs.next();
         } catch (SQLException e) {
             Msg.warn(this, "Failed to load approval grant: " + e.getMessage());
             return false;
         }
+    }
+
+    public boolean isAcceptAllToolsEnabled(int sessionId) {
+        if (sessionId <= 0) {
+            return false;
+        }
+        return hasSessionGrant(sessionId, TOOL_NAME_ALL);
+    }
+
+    public void setAcceptAllToolsEnabled(int sessionId, boolean enabled) {
+        if (sessionId <= 0) {
+            return;
+        }
+        if (enabled) {
+            saveSessionGrant(sessionId, TOOL_NAME_ALL, ToolRiskTier.UNKNOWN);
+        } else {
+            deleteSessionGrant(sessionId, TOOL_NAME_ALL);
+        }
+        notifyStateChanged();
     }
 
     private void saveSessionGrant(int sessionId, String toolName, ToolRiskTier riskTier) {
@@ -253,6 +274,17 @@ public class ToolApprovalService {
             stmt.executeUpdate();
         } catch (SQLException e) {
             Msg.warn(this, "Failed to persist approval grant: " + e.getMessage());
+        }
+    }
+
+    private void deleteSessionGrant(int sessionId, String toolName) {
+        String sql = "DELETE FROM GHChatApprovalGrants WHERE session_id = ? AND tool_name = ?";
+        try (PreparedStatement stmt = connection.prepareStatement(sql)) {
+            stmt.setInt(1, sessionId);
+            stmt.setString(2, toolName);
+            stmt.executeUpdate();
+        } catch (SQLException e) {
+            Msg.warn(this, "Failed to delete approval grant: " + e.getMessage());
         }
     }
 

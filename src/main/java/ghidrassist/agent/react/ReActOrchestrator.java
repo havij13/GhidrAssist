@@ -329,7 +329,10 @@ public class ReActOrchestrator {
                 todoManager.initializeFromLLMResponse(todoList);
                 Msg.info(this, "Investigation plan created with " + todoManager.getAllTodos().size() + " steps");
 
-                handler.onTodosUpdated(todoManager.formatForPrompt());
+                handler.onTodosUpdated(
+                    todoManager.formatForPrompt(),
+                    todoManager.getAllTodos(),
+                    todoManager.toCompactString());
 
                 // Get available tools from all providers via ToolRegistry
                 List<Map<String, Object>> tools = getToolsAsFunction();
@@ -415,7 +418,13 @@ public class ReActOrchestrator {
         TodoListManager.Todo nextTodo = todoManager.getNextPending();
         if (nextTodo != null) {
             todoManager.setInProgress(nextTodo.getTask());
-            handler.onTodosUpdated(todoManager.formatForPrompt());
+            handler.onIterationStarted(currentIteration, nextTodo.getTask());
+            handler.onTodosUpdated(
+                todoManager.formatForPrompt(),
+                todoManager.getAllTodos(),
+                todoManager.toCompactString());
+        } else {
+            handler.onIterationStarted(currentIteration, null);
         }
 
         // Build investigation prompt
@@ -492,7 +501,10 @@ public class ReActOrchestrator {
                 } else {
                     Msg.info(ReActOrchestrator.this, "No tools executed this round - not marking todo complete");
                 }
-                handler.onTodosUpdated(todoManager.formatForPrompt());
+                handler.onTodosUpdated(
+                    todoManager.formatForPrompt(),
+                    todoManager.getAllTodos(),
+                    todoManager.toCompactString());
 
                 // Check if we should continue or finish
                 if (todoManager.allComplete() || !hasCalledTools) {
@@ -693,7 +705,10 @@ public class ReActOrchestrator {
                         "Reflection updated plan: +%d tasks, -%d tasks",
                         parsed.tasksToAdd.size(), parsed.tasksToRemove.size()
                     ));
-                    handler.onTodosUpdated(todoManager.formatForPrompt());
+                    handler.onTodosUpdated(
+                        todoManager.formatForPrompt(),
+                        todoManager.getAllTodos(),
+                        todoManager.toCompactString());
 
                     // Dynamic iteration budget extension (BinAssist parity)
                     if (!parsed.tasksToAdd.isEmpty()) {

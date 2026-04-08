@@ -25,9 +25,19 @@ public class TranscriptRenderer {
 
     private final MarkdownHelper markdownHelper = new MarkdownHelper();
     private final Set<String> expandedToolGroups = new HashSet<>();
+    private final Set<Long> expandedTodoCards = new HashSet<>();
 
     public String renderDocument(List<TranscriptEvent> events) {
         return wrap(renderFragment(events), true);
+    }
+
+    public String renderStreamingAssistantCardPrefix(Timestamp timestamp) {
+        return startCardTable("Assistant", accentColor(TranscriptEventKind.ASSISTANT_MESSAGE),
+            "Assistant", timestamp, null, null);
+    }
+
+    public String renderStreamingAssistantCardSuffix() {
+        return endCardTable();
     }
 
     public String renderFragment(List<TranscriptEvent> events) {
@@ -147,7 +157,9 @@ public class TranscriptRenderer {
             event.getTitle(), event.getCreatedAt(), null, null));
 
         String body = resolveBody(event);
-        if (event.getKind() == TranscriptEventKind.CONTEXT_COMPACTED) {
+        if (event.getKind() == TranscriptEventKind.TODO_UPDATED) {
+            card.append(renderTodoSnapshot(event));
+        } else if (event.getKind() == TranscriptEventKind.CONTEXT_COMPACTED) {
             JsonObject metadata = parseMetadata(event);
             if (metadata != null && !metadata.entrySet().isEmpty()) {
                 card.append(section("Compaction Summary", body));
@@ -200,6 +212,7 @@ public class TranscriptRenderer {
     private boolean usesMarkdown(TranscriptEventKind kind) {
         return kind == TranscriptEventKind.USER_MESSAGE
             || kind == TranscriptEventKind.ASSISTANT_MESSAGE
+            || kind == TranscriptEventKind.FINDING_ADDED
             || kind == TranscriptEventKind.DOCUMENT_SNAPSHOT
             || kind == TranscriptEventKind.CONTEXT_COMPACTED;
     }
@@ -209,6 +222,9 @@ public class TranscriptRenderer {
             case USER_MESSAGE -> "#4c79d7";
             case ASSISTANT_MESSAGE, DOCUMENT_SNAPSHOT -> "#2e8b57";
             case APPROVAL_REQUESTED, APPROVAL_DECISION -> "#b85c28";
+            case TODO_UPDATED -> "#8066cc";
+            case FINDING_ADDED -> "#a26b00";
+            case ITERATION_NOTICE -> "#5c6f82";
             case CONTEXT_COMPACTED -> "#6b46c1";
             case SYSTEM_NOTICE -> "#666666";
             default -> "#666666";
@@ -243,6 +259,9 @@ public class TranscriptRenderer {
             case TOOL_CALL_FAILED -> "Tool Failed";
             case APPROVAL_REQUESTED -> "Approval Requested";
             case APPROVAL_DECISION -> "Approval Decision";
+            case TODO_UPDATED -> "Tasks";
+            case FINDING_ADDED -> "Finding";
+            case ITERATION_NOTICE -> "Agent";
             case CONTEXT_COMPACTED -> "Context Compacted";
             case SYSTEM_NOTICE -> "System";
             case DOCUMENT_SNAPSHOT -> "Document Snapshot";
@@ -352,6 +371,15 @@ public class TranscriptRenderer {
         }
     }
 
+    public void toggleTodoCard(long eventId) {
+        if (eventId <= 0) {
+            return;
+        }
+        if (!expandedTodoCards.add(eventId)) {
+            expandedTodoCards.remove(eventId);
+        }
+    }
+
     private String endCardTable() {
         return "</td></tr></table>";
     }
@@ -419,6 +447,100 @@ public class TranscriptRenderer {
         return html.toString();
     }
 
+    private String renderTodoSnapshot(TranscriptEvent event) {
+        JsonObject metadata = parseMetadata(event);
+        boolean expanded = expandedTodoCards.contains(event.getId());
+        StringBuilder html = new StringBuilder();
+        html.append("<div class='ga-tool-summary'>");
+        html.append("<div><b>Summary:</b> ")
+            .append(escapeHtml(firstNonBlank(
+                getString(metadata, "summary"),
+                compactPreview(event.getPreviewText(), 120),
+                "Task list updated")))
+            .append("</div>");
+        if (metadata != null) {
+            String counts = formatTodoCounts(metadata);
+            if (counts != null) {
+                html.append("<div><b>Progress:</b> ").append(escapeHtml(counts)).append("</div>");
+            }
+            String activeTask = findActiveTodo(metadata);
+            if (activeTask != null) {
+                html.append("<div><b>Active:</b> ").append(escapeHtml(activeTask)).append("</div>");
+            }
+        }
+        html.append("</div>");
+        if (expanded && metadata != null) {
+            html.append(section("Tasks", formatTodoDetails(metadata)));
+        }
+        html.append(todoToggleLink(event.getId(), expanded));
+        return html.toString();
+    }
+
+    private String formatTodoCounts(JsonObject metadata) {
+        if (metadata == null) {
+            return null;
+        }
+        int total = getInt(metadata, "total_count");
+        int complete = getInt(metadata, "complete_count");
+        int inProgress = getInt(metadata, "in_progress_count");
+        int pending = getInt(metadata, "pending_count");
+        if (total <= 0) {
+            return null;
+        }
+        return complete + "/" + total + " complete"
+            + " | " + inProgress + " active"
+            + " | " + pending + " pending";
+    }
+
+    private String findActiveTodo(JsonObject metadata) {
+        if (metadata == null || !metadata.has("todos") || !metadata.get("todos").isJsonArray()) {
+            return null;
+        }
+        for (JsonElement element : metadata.getAsJsonArray("todos")) {
+            if (!element.isJsonObject()) {
+                continue;
+            }
+            JsonObject todo = element.getAsJsonObject();
+            if ("IN_PROGRESS".equalsIgnoreCase(getString(todo, "status"))) {
+                return getString(todo, "task");
+            }
+        }
+        return null;
+    }
+
+    private String formatTodoDetails(JsonObject metadata) {
+        if (metadata == null || !metadata.has("todos") || !metadata.get("todos").isJsonArray()) {
+            return "";
+        }
+        List<String> lines = new ArrayList<>();
+        for (JsonElement element : metadata.getAsJsonArray("todos")) {
+            if (!element.isJsonObject()) {
+                continue;
+            }
+            JsonObject todo = element.getAsJsonObject();
+            String status = firstNonBlank(getString(todo, "status"), "PENDING");
+            String icon = switch (status) {
+                case "COMPLETE" -> "[x]";
+                case "IN_PROGRESS" -> "[->]";
+                default -> "[ ]";
+            };
+            StringBuilder line = new StringBuilder();
+            line.append(icon).append(" ").append(firstNonBlank(getString(todo, "task"), "Unnamed task"));
+            String evidence = getString(todo, "evidence");
+            if (evidence != null && !evidence.isBlank()) {
+                line.append("\n    evidence: ").append(evidence);
+            }
+            lines.add(line.toString());
+        }
+        return String.join("\n", lines);
+    }
+
+    private String todoToggleLink(long eventId, boolean expanded) {
+        String action = expanded ? "todo-collapse:" : "todo-expand:";
+        String label = expanded ? "Hide tasks" : "Show tasks";
+        return "<div class='ga-toggle'><a href='" + action + eventId + "'>" + label + "</a></div>";
+    }
+
     private String toggleLink(String correlationId, boolean expanded) {
         String action = expanded ? "tool-collapse:" : "tool-expand:";
         String label = expanded ? "Hide details" : "Show details";
@@ -472,6 +594,17 @@ public class TranscriptRenderer {
     private void addSummaryPart(List<String> parts, String key, String value) {
         if (value != null && !value.isBlank()) {
             parts.add(key + "=" + value);
+        }
+    }
+
+    private int getInt(JsonObject metadata, String key) {
+        if (metadata == null || key == null || !metadata.has(key) || metadata.get(key).isJsonNull()) {
+            return 0;
+        }
+        try {
+            return metadata.get(key).getAsInt();
+        } catch (Exception ignored) {
+            return 0;
         }
     }
 }

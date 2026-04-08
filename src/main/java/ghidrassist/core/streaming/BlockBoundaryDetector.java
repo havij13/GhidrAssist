@@ -12,7 +12,6 @@ public class BlockBoundaryDetector {
     private static final Pattern ATX_HEADING = Pattern.compile("^#{1,6}\\s");
     private static final Pattern THEMATIC_BREAK = Pattern.compile("^(\\*{3,}|-{3,}|_{3,})\\s*$");
     private static final Pattern FENCE_OPEN = Pattern.compile("^(`{3,}|~{3,})");
-    private static final Pattern LIST_ITEM = Pattern.compile("^(\\s*([-*+]|\\d+[.)]))\\s");
     private static final Pattern BLOCK_QUOTE = Pattern.compile("^>\\s?");
     private static final Pattern TABLE_ROW = Pattern.compile("^\\|.*\\|\\s*$");
 
@@ -106,11 +105,6 @@ public class BlockBoundaryDetector {
 
         // Thematic break
         if (THEMATIC_BREAK.matcher(line).matches()) {
-            return true;
-        }
-
-        // List item start
-        if (LIST_ITEM.matcher(line).find()) {
             return true;
         }
 

@@ -12,6 +12,9 @@ public enum TranscriptEventKind {
     TOOL_CALL_FAILED("tool_call_failed"),
     APPROVAL_REQUESTED("approval_requested"),
     APPROVAL_DECISION("approval_decision"),
+    TODO_UPDATED("todo_updated"),
+    FINDING_ADDED("finding_added"),
+    ITERATION_NOTICE("iteration_notice"),
     CONTEXT_COMPACTED("context_compacted"),
     SYSTEM_NOTICE("system_notice"),
     DOCUMENT_SNAPSHOT("document_snapshot");
