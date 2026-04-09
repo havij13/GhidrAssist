@@ -37,6 +37,7 @@ import java.sql.Timestamp;
 import java.time.Instant;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
+import java.util.UUID;
 
 import javax.swing.*;
 import javax.swing.event.HyperlinkEvent;
@@ -895,10 +896,13 @@ public class TabController {
     }
 
     private void handleAgenticQuery(String query) {
+        final String reactRunId = UUID.randomUUID().toString();
+
         // Add user query to conversation history and ensure we have a session
         try {
             String processedQuery = ghidrassist.core.QueryProcessor.processMacrosInQuery(query, plugin);
             queryService.addUserQuery(processedQuery);
+            queryService.beginReActRun(reactRunId, processedQuery);
         } catch (Exception e) {
             Msg.error(this, "Failed to add query to conversation history: " + e.getMessage(), e);
         }
@@ -911,6 +915,10 @@ public class TabController {
         } else {
             initialContext = "";
         }
+        final String continuationBridge = queryService.getReActContinuationBridgeMarkdown();
+        final String reactInitialContext = (continuationBridge != null && !continuationBridge.isBlank())
+            ? "## Prior Investigation Context\n" + continuationBridge + "\n\n## Current Binary Context\n" + initialContext
+            : initialContext;
 
         // Container to hold iteration history so it can be accessed in the final result handler
         final StringBuilder[] historyContainer = new StringBuilder[]{new StringBuilder()};
@@ -966,12 +974,12 @@ public class TabController {
 
             // Create progress handler for UI updates with todos and findings support
             ghidrassist.agent.react.ReActProgressHandler progressHandler =
-                createReActProgressHandler(historyContainer);
+                createReActProgressHandler(historyContainer, reactRunId, query);
 
             // Start analysis asynchronously
             return currentOrchestrator.analyze(
                 query,
-                initialContext,
+                reactInitialContext,
                 String.valueOf(queryService.getCurrentSessionId()),
                 progressHandler
             );
@@ -984,6 +992,8 @@ public class TabController {
                 // - Completion metadata (status, iterations, duration)
                 // No need to append result.toMarkdown() which would duplicate the answer
 
+                queryService.persistReActFinalAssistantMessage(result.getAnswer());
+
                 // Save ReAct analysis with proper chunking to database
                 // Pass the FULL chronological history, not just summaries
                 queryService.saveReActAnalysis(
@@ -993,6 +1003,7 @@ public class TabController {
                 );
 
                 renderCurrentChatSession();
+                queryService.endReActRun(reactRunId);
 
                 // Clear the orchestrator reference
                 currentOrchestrator = null;
@@ -1029,6 +1040,8 @@ public class TabController {
                     // Refresh chat history to show the saved session
                     refreshChatHistory();
                 }
+
+                queryService.endReActRun(reactRunId);
 
                 if (!errorMsg.toLowerCase().contains("cancel")) {
                     Msg.showError(getClass(), queryTab, "Agentic Analysis Error",
@@ -2097,7 +2110,10 @@ public class TabController {
         };
     }
     
-    private ghidrassist.agent.react.ReActProgressHandler createReActProgressHandler(final StringBuilder[] historyContainer) {
+    private ghidrassist.agent.react.ReActProgressHandler createReActProgressHandler(
+            final StringBuilder[] historyContainer,
+            final String reactRunId,
+            final String objective) {
         return new ghidrassist.agent.react.ReActProgressHandler() {
             private final StringBuilder chronologicalHistory = new StringBuilder();
             private final Object historyLock = new Object();
@@ -2130,7 +2146,9 @@ public class TabController {
                     "Agentic Investigation",
                     "Planning investigation steps for: " + objective,
                     null,
-                    "react_start");
+                    "react_start",
+                    reactRunId,
+                    objective);
                 SwingUtilities.invokeLater(() -> renderCurrentChatSession());
             }
 
@@ -2169,13 +2187,17 @@ public class TabController {
                         "Iteration " + iteration,
                         "Working on: " + activeTask,
                         iteration,
-                        "iteration_start");
+                        "iteration_start",
+                        reactRunId,
+                        objective);
                 } else {
                     queryService.appendReActNotice(
                         "Iteration " + iteration,
                         "Continuing investigation",
                         iteration,
-                        "iteration_start");
+                        "iteration_start",
+                        reactRunId,
+                        objective);
                 }
             }
 
@@ -2188,7 +2210,10 @@ public class TabController {
                     }
                     chronologicalHistory.append("💡 **Finding**: ").append(finding).append("\n\n");
                 }
-                queryService.appendReActFinding(finding, lastIterationSeen > 0 ? lastIterationSeen : null);
+                queryService.appendReActFinding(
+                    finding,
+                    lastIterationSeen > 0 ? lastIterationSeen : null,
+                    reactRunId);
             }
 
             @Override
@@ -2222,7 +2247,11 @@ public class TabController {
 
                     historyContainer[0] = chronologicalHistory;
                 }
-                queryService.appendTranscriptAssistantMessage(result.getAnswer());
+                queryService.appendTranscriptAssistantMessage(
+                    result.getAnswer(),
+                    reactRunId,
+                    objective,
+                    result.isSuccess() ? "SUCCESS" : String.valueOf(result.getStatus()));
                 queryService.appendReActNotice(
                     "Investigation Complete",
                     String.format("Status: %s | Iterations: %d | Tool calls: %d",
@@ -2230,7 +2259,9 @@ public class TabController {
                         result.getIterationCount(),
                         result.getToolCallCount()),
                     null,
-                    "completion");
+                    "completion",
+                    reactRunId,
+                    objective);
             }
 
             @Override
@@ -2246,7 +2277,9 @@ public class TabController {
                     "Investigation Error",
                     error.getMessage(),
                     lastIterationSeen > 0 ? lastIterationSeen : null,
-                    "error");
+                    "error",
+                    reactRunId,
+                    objective);
             }
 
             @Override
@@ -2261,7 +2294,9 @@ public class TabController {
                     "Iteration Budget",
                     remaining + " iteration(s) remaining",
                     lastIterationSeen > 0 ? lastIterationSeen : null,
-                    "iteration_warning");
+                    "iteration_warning",
+                    reactRunId,
+                    objective);
             }
 
             @Override
@@ -2271,7 +2306,9 @@ public class TabController {
                     "Tool Budget",
                     remaining + " tool call(s) remaining",
                     lastIterationSeen > 0 ? lastIterationSeen : null,
-                    "tool_warning");
+                    "tool_warning",
+                    reactRunId,
+                    objective);
             }
 
             @Override
@@ -2289,7 +2326,9 @@ public class TabController {
                 queryService.appendReActTodoSnapshot(
                     compactSummary != null ? compactSummary : todosFormatted,
                     todos,
-                    lastIterationSeen > 0 ? lastIterationSeen : null);
+                    lastIterationSeen > 0 ? lastIterationSeen : null,
+                    reactRunId,
+                    objective);
             }
 
             @Override
@@ -2302,7 +2341,9 @@ public class TabController {
                     "Context Summary",
                     summary,
                     lastIterationSeen > 0 ? lastIterationSeen : null,
-                    "context_summary");
+                    "context_summary",
+                    reactRunId,
+                    objective);
             }
 
             @Override

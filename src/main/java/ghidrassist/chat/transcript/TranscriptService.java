@@ -1,6 +1,9 @@
 package ghidrassist.chat.transcript;
 
+import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
 import ghidra.util.Msg;
 import ghidrassist.agent.react.TodoListManager;
 import ghidrassist.chat.PersistedChatMessage;
@@ -16,16 +19,67 @@ import java.sql.SQLException;
 import java.sql.Statement;
 import java.sql.Timestamp;
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Consumer;
 
 /**
  * Append-only transcript service used for persistence, backfill, and rendering.
  */
 public class TranscriptService implements ToolExecutionObserver {
+    public static class ReActContinuationBridge {
+        private final String reactRunId;
+        private final String markdown;
+        private final int findingCount;
+        private final int pendingCount;
+        private final String status;
+
+        public ReActContinuationBridge(String reactRunId, String markdown, int findingCount,
+                                       int pendingCount, String status) {
+            this.reactRunId = reactRunId;
+            this.markdown = markdown;
+            this.findingCount = findingCount;
+            this.pendingCount = pendingCount;
+            this.status = status;
+        }
+
+        public String getReactRunId() {
+            return reactRunId;
+        }
+
+        public String getMarkdown() {
+            return markdown;
+        }
+
+        public int getFindingCount() {
+            return findingCount;
+        }
+
+        public int getPendingCount() {
+            return pendingCount;
+        }
+
+        public String getStatus() {
+            return status;
+        }
+    }
+
+    private static class ActiveReActRun {
+        private final String reactRunId;
+        private final String objective;
+
+        private ActiveReActRun(String reactRunId, String objective) {
+            this.reactRunId = reactRunId;
+            this.objective = objective;
+        }
+    }
+
     private final Connection connection;
     private final TranscriptArtifactStore artifactStore;
     private final TranscriptRenderer renderer;
+    private final Map<Integer, ActiveReActRun> activeReActRuns = new ConcurrentHashMap<>();
     private volatile Consumer<Integer> sessionUpdateListener;
 
     public TranscriptService(Connection connection, Path artifactRoot) {
@@ -158,7 +212,16 @@ public class TranscriptService implements ToolExecutionObserver {
     public void appendAssistantMessage(int sessionId, String programHash, String content, Timestamp createdAt,
                                        Integer sourceMessageId, Integer sourceMessageOrder) {
         appendEvent(sessionId, programHash, null, null, TranscriptEventKind.ASSISTANT_MESSAGE,
-            "assistant", "Assistant", content, content, null, null, sourceMessageId, sourceMessageOrder, createdAt, true);
+            "assistant", "Assistant", content, content, mergeActiveReActMetadata(sessionId, null),
+            null, sourceMessageId, sourceMessageOrder, createdAt, true);
+    }
+
+    public void appendReActAssistantMessage(int sessionId, String programHash, String content, Timestamp createdAt,
+                                            String reactRunId, String objective, String status) {
+        appendEvent(sessionId, programHash, null, null, TranscriptEventKind.ASSISTANT_MESSAGE,
+            "assistant", "Assistant", content, content,
+            buildReActAssistantMetadata(reactRunId, objective, status),
+            null, null, null, createdAt, true);
     }
 
     public void appendSystemNotice(int sessionId, String programHash, String title, String content) {
@@ -185,7 +248,8 @@ public class TranscriptService implements ToolExecutionObserver {
         appendEvent(sessionId, programHash, correlationId, null, TranscriptEventKind.APPROVAL_REQUESTED,
             "system", "Approval required: " + toolName,
             args != null ? args.toString() : "{}", args != null ? args.toString() : "{}",
-            buildApprovalRequestedMetadata(requestId, toolName, toolSource, riskTier, args), null, null, null, null, true);
+            buildApprovalRequestedMetadata(sessionId, requestId, toolName, toolSource, riskTier, args),
+            null, null, null, null, true);
     }
 
     public void appendApprovalDecision(int sessionId, String programHash, String correlationId, String requestId,
@@ -193,28 +257,67 @@ public class TranscriptService implements ToolExecutionObserver {
                                        String toolSource) {
         appendEvent(sessionId, programHash, correlationId, null, TranscriptEventKind.APPROVAL_DECISION,
             "system", "Approval decision: " + toolName,
-            decision, decision, buildApprovalDecisionMetadata(requestId, toolName, toolSource, riskTier, decision, scope),
+            decision, decision,
+            buildApprovalDecisionMetadata(sessionId, requestId, toolName, toolSource, riskTier, decision, scope),
             null, null, null, null, true);
     }
 
     public void appendTodoSnapshot(int sessionId, String programHash, String summary,
                                    List<TodoListManager.Todo> todos, Integer iteration) {
+        appendTodoSnapshot(sessionId, programHash, summary, todos, iteration, null, null);
+    }
+
+    public void appendTodoSnapshot(int sessionId, String programHash, String summary,
+                                   List<TodoListManager.Todo> todos, Integer iteration,
+                                   String reactRunId, String objective) {
         appendEvent(sessionId, programHash, null, null, TranscriptEventKind.TODO_UPDATED,
             "system", "Investigation Tasks", summary, summary,
-            buildTodoMetadata(summary, todos, iteration), null, null, null, null, true);
+            buildTodoMetadata(summary, todos, iteration, reactRunId, objective),
+            null, null, null, null, true);
     }
 
     public void appendFinding(int sessionId, String programHash, String finding, Integer iteration) {
+        appendFinding(sessionId, programHash, finding, iteration, null);
+    }
+
+    public void appendFinding(int sessionId, String programHash, String finding, Integer iteration,
+                              String reactRunId) {
         appendEvent(sessionId, programHash, null, null, TranscriptEventKind.FINDING_ADDED,
             "assistant", "Finding", finding, finding,
-            buildFindingMetadata(iteration), null, null, null, null, true);
+            buildFindingMetadata(iteration, reactRunId), null, null, null, null, true);
     }
 
     public void appendIterationNotice(int sessionId, String programHash, String title, String content,
                                       Integer iteration, String category) {
+        appendIterationNotice(sessionId, programHash, title, content, iteration, category, null, null);
+    }
+
+    public void appendIterationNotice(int sessionId, String programHash, String title, String content,
+                                      Integer iteration, String category, String reactRunId, String objective) {
         appendEvent(sessionId, programHash, null, null, TranscriptEventKind.ITERATION_NOTICE,
             "system", title, content, content,
-            buildIterationNoticeMetadata(iteration, category), null, null, null, null, true);
+            buildIterationNoticeMetadata(iteration, category, reactRunId, objective),
+            null, null, null, null, true);
+    }
+
+    public void beginReActRun(int sessionId, String reactRunId, String objective) {
+        if (sessionId <= 0 || reactRunId == null || reactRunId.isBlank()) {
+            return;
+        }
+        activeReActRuns.put(sessionId, new ActiveReActRun(reactRunId, objective));
+    }
+
+    public void endReActRun(int sessionId, String reactRunId) {
+        if (sessionId <= 0) {
+            return;
+        }
+        ActiveReActRun active = activeReActRuns.get(sessionId);
+        if (active == null) {
+            return;
+        }
+        if (reactRunId == null || reactRunId.equals(active.reactRunId)) {
+            activeReActRuns.remove(sessionId);
+        }
     }
 
     public synchronized String renderSessionHtml(int sessionId) {
@@ -239,6 +342,104 @@ public class TranscriptService implements ToolExecutionObserver {
 
     public synchronized void toggleTodoCard(long eventId) {
         renderer.toggleTodoCard(eventId);
+    }
+
+    public synchronized ReActContinuationBridge buildLatestReActContinuationBridge(int sessionId) {
+        if (sessionId <= 0) {
+            return null;
+        }
+
+        List<TranscriptEvent> events = loadEvents(sessionId);
+        if (events.isEmpty()) {
+            return null;
+        }
+
+        TranscriptEvent finalEvent = null;
+        JsonObject finalMetadata = null;
+        for (int i = events.size() - 1; i >= 0; i--) {
+            TranscriptEvent event = events.get(i);
+            if (event.getKind() != TranscriptEventKind.ASSISTANT_MESSAGE) {
+                continue;
+            }
+            JsonObject metadata = parseMetadata(event.getMetadataJson());
+            if (metadata != null && metadata.has("react_final") && metadata.get("react_final").getAsBoolean()) {
+                finalEvent = event;
+                finalMetadata = metadata;
+                break;
+            }
+        }
+
+        if (finalEvent == null || finalMetadata == null) {
+            return null;
+        }
+
+        String reactRunId = getMetadataString(finalMetadata, "react_run_id");
+        if (reactRunId == null || reactRunId.isBlank()) {
+            return null;
+        }
+
+        String objective = getMetadataString(finalMetadata, "react_objective");
+        String status = getMetadataString(finalMetadata, "react_status");
+        List<String> findings = new ArrayList<>();
+        LinkedHashSet<String> findingSet = new LinkedHashSet<>();
+        JsonObject latestTodoMetadata = null;
+
+        for (TranscriptEvent event : events) {
+            JsonObject metadata = parseMetadata(event.getMetadataJson());
+            if (!reactRunId.equals(getMetadataString(metadata, "react_run_id"))) {
+                continue;
+            }
+            if (event.getKind() == TranscriptEventKind.FINDING_ADDED) {
+                String finding = normalizeBridgeText(event.getContentText(), 320);
+                if (!finding.isBlank() && findingSet.add(finding)) {
+                    findings.add(finding);
+                }
+            } else if (event.getKind() == TranscriptEventKind.TODO_UPDATED) {
+                latestTodoMetadata = metadata;
+            }
+        }
+
+        if (findings.size() > 6) {
+            findings = findings.subList(Math.max(0, findings.size() - 6), findings.size());
+        }
+
+        int pendingCount = getMetadataInt(latestTodoMetadata, "pending_count");
+        int activeCount = getMetadataInt(latestTodoMetadata, "in_progress_count");
+        String activeTodo = extractActiveTodo(latestTodoMetadata);
+
+        StringBuilder markdown = new StringBuilder();
+        markdown.append("## Prior ReAct Investigation Context\n\n");
+        if (objective != null && !objective.isBlank()) {
+            markdown.append("- Objective: ").append(objective.trim()).append("\n");
+        }
+        if (status != null && !status.isBlank()) {
+            markdown.append("- Status: ").append(status.trim()).append("\n");
+        }
+
+        String finalAnswer = normalizeBridgeText(finalEvent.getContentText(), 900);
+        if (!finalAnswer.isBlank()) {
+            markdown.append("\nConclusion:\n").append(finalAnswer).append("\n");
+        }
+
+        if (!findings.isEmpty()) {
+            markdown.append("\nKey findings:\n");
+            for (String finding : findings) {
+                markdown.append("- ").append(finding).append("\n");
+            }
+        }
+
+        if ((activeCount > 0 || pendingCount > 0) && activeTodo != null && !activeTodo.isBlank()) {
+            markdown.append("\nOpen investigation items:\n");
+            markdown.append("- ").append(activeTodo).append("\n");
+        }
+
+        return new ReActContinuationBridge(
+            reactRunId,
+            markdown.toString().trim(),
+            findings.size(),
+            pendingCount,
+            status
+        );
     }
 
     public synchronized boolean updateAssistantMessageBySource(int sessionId, Integer sourceMessageId,
@@ -369,7 +570,8 @@ public class TranscriptService implements ToolExecutionObserver {
                                     Tool tool, JsonObject args) {
         appendEvent(sessionId, programHash, correlationId, null, TranscriptEventKind.TOOL_CALL_REQUESTED,
             "tool", tool.getName(), args != null ? args.toString() : "{}",
-            args != null ? args.toString() : "{}", buildToolMetadata(tool, args), null, null, null, null, true);
+            args != null ? args.toString() : "{}",
+            buildToolMetadata(sessionId, tool, args), null, null, null, null, true);
     }
 
     @Override
@@ -377,7 +579,8 @@ public class TranscriptService implements ToolExecutionObserver {
                                   Tool tool, JsonObject args) {
         Long parentId = findMostRecentEventId(sessionId, correlationId, TranscriptEventKind.TOOL_CALL_REQUESTED);
         appendEvent(sessionId, programHash, correlationId, parentId, TranscriptEventKind.TOOL_CALL_STARTED,
-            "tool", tool.getName(), "Executing...", "Executing...", buildToolMetadata(tool, args), null, null, null, null, true);
+            "tool", tool.getName(), "Executing...", "Executing...",
+            buildToolMetadata(sessionId, tool, args), null, null, null, null, true);
     }
 
     @Override
@@ -389,7 +592,7 @@ public class TranscriptService implements ToolExecutionObserver {
         long eventId = appendEvent(sessionId, programHash, correlationId, parentId,
             TranscriptEventKind.TOOL_CALL_COMPLETED, "tool", tool.getName(),
             artifact.getInlineContent(), artifact.getPreviewText(),
-            buildToolMetadata(tool, args), artifact.getArtifactId(), null, null, null, true);
+            buildToolMetadata(sessionId, tool, args), artifact.getArtifactId(), null, null, null, true);
         if (artifact.getArtifactId() != null) {
             persistArtifact(eventId, sessionId, artifact);
         }
@@ -400,7 +603,8 @@ public class TranscriptService implements ToolExecutionObserver {
                                  Tool tool, JsonObject args, String errorMessage) {
         Long parentId = findMostRecentEventId(sessionId, correlationId, TranscriptEventKind.TOOL_CALL_STARTED);
         appendEvent(sessionId, programHash, correlationId, parentId, TranscriptEventKind.TOOL_CALL_FAILED,
-            "tool", tool.getName(), errorMessage, errorMessage, buildToolMetadata(tool, args), null, null, null, null, true);
+            "tool", tool.getName(), errorMessage, errorMessage,
+            buildToolMetadata(sessionId, tool, args), null, null, null, null, true);
     }
 
     private synchronized long appendEvent(int sessionId, String programHash, String correlationId,
@@ -727,17 +931,17 @@ public class TranscriptService implements ToolExecutionObserver {
         }
     }
 
-    private String buildToolMetadata(Tool tool, JsonObject args) {
+    private String buildToolMetadata(int sessionId, Tool tool, JsonObject args) {
         JsonObject metadata = new JsonObject();
         metadata.addProperty("tool", tool.getName());
         metadata.addProperty("source", tool.getSource());
         if (args != null) {
             metadata.add("args", args.deepCopy());
         }
-        return metadata.toString();
+        return mergeActiveReActMetadata(sessionId, metadata.toString());
     }
 
-    private String buildApprovalRequestedMetadata(String requestId, String toolName, String toolSource,
+    private String buildApprovalRequestedMetadata(int sessionId, String requestId, String toolName, String toolSource,
                                                   String riskTier, JsonObject args) {
         JsonObject metadata = new JsonObject();
         metadata.addProperty("request_id", requestId);
@@ -748,10 +952,10 @@ public class TranscriptService implements ToolExecutionObserver {
         if (args != null) {
             metadata.add("args", args.deepCopy());
         }
-        return metadata.toString();
+        return mergeActiveReActMetadata(sessionId, metadata.toString());
     }
 
-    private String buildApprovalDecisionMetadata(String requestId, String toolName, String toolSource,
+    private String buildApprovalDecisionMetadata(int sessionId, String requestId, String toolName, String toolSource,
                                                  String riskTier, String decision, String scope) {
         JsonObject metadata = new JsonObject();
         metadata.addProperty("request_id", requestId);
@@ -766,10 +970,11 @@ public class TranscriptService implements ToolExecutionObserver {
         if (scope != null) {
             metadata.addProperty("scope", scope);
         }
-        return metadata.toString();
+        return mergeActiveReActMetadata(sessionId, metadata.toString());
     }
 
-    private String buildTodoMetadata(String summary, List<TodoListManager.Todo> todos, Integer iteration) {
+    private String buildTodoMetadata(String summary, List<TodoListManager.Todo> todos, Integer iteration,
+                                     String reactRunId, String objective) {
         JsonObject metadata = new JsonObject();
         if (summary != null) {
             metadata.addProperty("summary", summary);
@@ -777,7 +982,7 @@ public class TranscriptService implements ToolExecutionObserver {
         if (iteration != null) {
             metadata.addProperty("iteration", iteration);
         }
-        com.google.gson.JsonArray todoArray = new com.google.gson.JsonArray();
+        JsonArray todoArray = new JsonArray();
         int pending = 0;
         int inProgress = 0;
         int complete = 0;
@@ -806,18 +1011,21 @@ public class TranscriptService implements ToolExecutionObserver {
         metadata.addProperty("in_progress_count", inProgress);
         metadata.addProperty("complete_count", complete);
         metadata.addProperty("total_count", pending + inProgress + complete);
+        addReActMetadata(metadata, reactRunId, objective, null, false);
         return metadata.toString();
     }
 
-    private String buildFindingMetadata(Integer iteration) {
+    private String buildFindingMetadata(Integer iteration, String reactRunId) {
         JsonObject metadata = new JsonObject();
         if (iteration != null) {
             metadata.addProperty("iteration", iteration);
         }
+        addReActMetadata(metadata, reactRunId, null, null, false);
         return metadata.toString();
     }
 
-    private String buildIterationNoticeMetadata(Integer iteration, String category) {
+    private String buildIterationNoticeMetadata(Integer iteration, String category,
+                                               String reactRunId, String objective) {
         JsonObject metadata = new JsonObject();
         if (iteration != null) {
             metadata.addProperty("iteration", iteration);
@@ -825,6 +1033,117 @@ public class TranscriptService implements ToolExecutionObserver {
         if (category != null && !category.isBlank()) {
             metadata.addProperty("category", category);
         }
+        addReActMetadata(metadata, reactRunId, objective, null, false);
         return metadata.toString();
+    }
+
+    private String buildReActAssistantMetadata(String reactRunId, String objective, String status) {
+        JsonObject metadata = new JsonObject();
+        addReActMetadata(metadata, reactRunId, objective, status, true);
+        return metadata.toString();
+    }
+
+    private void addReActMetadata(JsonObject metadata, String reactRunId, String objective,
+                                  String status, boolean reactFinal) {
+        if (metadata == null || reactRunId == null || reactRunId.isBlank()) {
+            return;
+        }
+        metadata.addProperty("react_run_id", reactRunId);
+        if (objective != null && !objective.isBlank()) {
+            metadata.addProperty("react_objective", objective);
+        }
+        if (status != null && !status.isBlank()) {
+            metadata.addProperty("react_status", status);
+        }
+        if (reactFinal) {
+            metadata.addProperty("react_final", true);
+        }
+    }
+
+    private String mergeActiveReActMetadata(int sessionId, String metadataJson) {
+        ActiveReActRun active = activeReActRuns.get(sessionId);
+        if (active == null) {
+            return metadataJson;
+        }
+        JsonObject metadata = parseMetadata(metadataJson);
+        if (metadata == null) {
+            metadata = new JsonObject();
+        }
+        addReActMetadata(metadata, active.reactRunId, active.objective, null, false);
+        return metadata.toString();
+    }
+
+    private JsonObject parseMetadata(String metadataJson) {
+        if (metadataJson == null || metadataJson.isBlank()) {
+            return null;
+        }
+        try {
+            JsonElement element = JsonParser.parseString(metadataJson);
+            if (element.isJsonObject()) {
+                return element.getAsJsonObject();
+            }
+        } catch (Exception e) {
+            Msg.warn(this, "Failed to parse transcript metadata: " + e.getMessage());
+        }
+        return null;
+    }
+
+    private String getMetadataString(JsonObject metadata, String key) {
+        if (metadata == null || !metadata.has(key) || metadata.get(key).isJsonNull()) {
+            return null;
+        }
+        try {
+            return metadata.get(key).getAsString();
+        } catch (Exception ignored) {
+            return null;
+        }
+    }
+
+    private int getMetadataInt(JsonObject metadata, String key) {
+        if (metadata == null || !metadata.has(key) || metadata.get(key).isJsonNull()) {
+            return 0;
+        }
+        try {
+            return metadata.get(key).getAsInt();
+        } catch (Exception ignored) {
+            return 0;
+        }
+    }
+
+    private String extractActiveTodo(JsonObject todoMetadata) {
+        if (todoMetadata == null || !todoMetadata.has("todos")) {
+            return null;
+        }
+        JsonArray todos = todoMetadata.getAsJsonArray("todos");
+        String pendingTodo = null;
+        for (JsonElement element : todos) {
+            if (!element.isJsonObject()) {
+                continue;
+            }
+            JsonObject todo = element.getAsJsonObject();
+            String status = getMetadataString(todo, "status");
+            String task = getMetadataString(todo, "task");
+            if (task == null || task.isBlank()) {
+                continue;
+            }
+            if ("IN_PROGRESS".equalsIgnoreCase(status)) {
+                return task;
+            }
+            if (pendingTodo == null && "PENDING".equalsIgnoreCase(status)) {
+                pendingTodo = task;
+            }
+        }
+        return pendingTodo;
+    }
+
+    private String normalizeBridgeText(String value, int maxChars) {
+        if (value == null) {
+            return "";
+        }
+        String normalized = value.replace("\r\n", "\n").replace('\r', '\n').trim();
+        if (normalized.length() > maxChars) {
+            normalized = normalized.substring(0, Math.max(0, maxChars - 3)).trim() + "...";
+        }
+        return normalized;
     }
 }

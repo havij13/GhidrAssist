@@ -148,7 +148,7 @@ public class QueryService {
         // Add user message to message store and database
         addUserMessage(processedQuery, messageStore.getCurrentProviderType(), null);
 
-        return new QueryRequest(processedQuery, messageStore.getFormattedConversation(), useMCP);
+        return new QueryRequest(processedQuery, buildConversationPromptWithBridge(), useMCP);
     }
 
     // ==================== Query Execution ====================
@@ -310,6 +310,7 @@ public class QueryService {
             } else {
                 existingHistory = new ArrayList<>(fullHistory.subList(0, fullHistory.size() - 1));
             }
+            existingHistory = buildHistoryWithReActBridge(existingHistory);
 
             if (existingHistory.isEmpty()) {
                 llmApi.sendConversationalToolRequest(
@@ -376,6 +377,7 @@ public class QueryService {
                 // This preserves thinking data from previous assistant responses
                 existingHistory = new ArrayList<>(fullHistory.subList(0, fullHistory.size() - 1));
             }
+            existingHistory = buildHistoryWithReActBridge(existingHistory);
 
             if (existingHistory.isEmpty()) {
                 llmApi.sendConversationalToolRequest(
@@ -406,6 +408,67 @@ public class QueryService {
     private void executeRegularQuery(QueryRequest request, LlmApi llmApi,
                                       LlmApi.LlmResponseHandler handler) throws Exception {
         llmApi.sendRequestAsync(request.getFullConversation(), handler);
+    }
+
+    private List<ChatMessage> buildHistoryWithReActBridge(List<ChatMessage> existingHistory) {
+        List<ChatMessage> history = existingHistory != null
+            ? new ArrayList<>(existingHistory)
+            : new ArrayList<>();
+        TranscriptService.ReActContinuationBridge bridge = resolveLatestReActContinuationBridge();
+        if (bridge == null || bridge.getMarkdown() == null || bridge.getMarkdown().isBlank()) {
+            return history;
+        }
+        ghidra.util.Msg.info(this, "Injecting ReAct continuation bridge for session "
+            + sessionManager.getCurrentSessionId() + " (run=" + bridge.getReactRunId()
+            + ", findings=" + bridge.getFindingCount() + ", pending=" + bridge.getPendingCount() + ")");
+        history.add(new ChatMessage(ChatMessage.ChatMessageRole.ASSISTANT, bridge.getMarkdown()));
+        return history;
+    }
+
+    private String buildConversationPromptWithBridge() {
+        List<PersistedChatMessage> messages = messageStore.getMessages();
+        if (messages == null || messages.isEmpty()) {
+            return "";
+        }
+
+        TranscriptService.ReActContinuationBridge bridge = resolveLatestReActContinuationBridge();
+        if (bridge == null || bridge.getMarkdown() == null || bridge.getMarkdown().isBlank()) {
+            return messageStore.getFormattedConversation();
+        }
+
+        StringBuilder conversation = new StringBuilder();
+        int lastIndex = messages.size() - 1;
+        for (int i = 0; i < messages.size(); i++) {
+            if (i == lastIndex) {
+                conversation.append("**Assistant**:\n")
+                    .append(bridge.getMarkdown())
+                    .append("\n\n");
+            }
+            PersistedChatMessage message = messages.get(i);
+            conversation.append("**")
+                .append(RoleNormalizer.toDisplayFormat(message.getRole()))
+                .append("**:\n")
+                .append(message.getContent())
+                .append("\n\n");
+        }
+
+        ghidra.util.Msg.info(this, "Injecting ReAct continuation bridge into plain prompt for session "
+            + sessionManager.getCurrentSessionId() + " (run=" + bridge.getReactRunId()
+            + ", findings=" + bridge.getFindingCount() + ", pending=" + bridge.getPendingCount() + ")");
+        return conversation.toString();
+    }
+
+    private TranscriptService.ReActContinuationBridge resolveLatestReActContinuationBridge() {
+        int sessionId = sessionManager.getCurrentSessionId();
+        if (sessionId == ChatSessionManager.NO_SESSION || !analysisDB.isReActSession(sessionId)) {
+            return null;
+        }
+        TranscriptService.ReActContinuationBridge bridge =
+            transcriptService.buildLatestReActContinuationBridge(sessionId);
+        if (bridge == null) {
+            ghidra.util.Msg.info(this, "No ReAct continuation bridge available for session " + sessionId);
+        }
+        return bridge;
     }
 
     // ==================== Message Management ====================
@@ -739,7 +802,12 @@ public class QueryService {
             analysisDB.getReActMessages(programHash, sessionId);
 
         if (messages != null && !messages.isEmpty()) {
-            messageStore.clear();
+            List<PersistedChatMessage> persistedMessages = messageRepository.loadMessages(programHash, sessionId);
+            if (persistedMessages != null && !persistedMessages.isEmpty()) {
+                messageStore.setMessages(persistedMessages);
+            } else {
+                messageStore.clear();
+            }
             transcriptService.ensureBackfilledFromReActMessages(programHash, sessionId, messages);
 
             // Set the session ID so Edit and other operations work
@@ -1452,6 +1520,27 @@ public class QueryService {
         return transcriptService.renderStreamingAssistantCardSuffix();
     }
 
+    public void beginReActRun(String reactRunId, String objective) {
+        int sessionId = sessionManager.getCurrentSessionId();
+        if (sessionId == ChatSessionManager.NO_SESSION) {
+            return;
+        }
+        transcriptService.beginReActRun(sessionId, reactRunId, objective);
+    }
+
+    public void endReActRun(String reactRunId) {
+        int sessionId = sessionManager.getCurrentSessionId();
+        if (sessionId == ChatSessionManager.NO_SESSION) {
+            return;
+        }
+        transcriptService.endReActRun(sessionId, reactRunId);
+    }
+
+    public String getReActContinuationBridgeMarkdown() {
+        TranscriptService.ReActContinuationBridge bridge = resolveLatestReActContinuationBridge();
+        return bridge != null ? bridge.getMarkdown() : null;
+    }
+
     public void toggleTodoCardExpansion(long eventId) {
         transcriptService.toggleTodoCard(eventId);
     }
@@ -1461,39 +1550,81 @@ public class QueryService {
     }
 
     public void appendTranscriptAssistantMessage(String content) {
+        appendTranscriptAssistantMessage(content, null, null, null);
+    }
+
+    public void appendTranscriptAssistantMessage(String content, String reactRunId,
+                                                String objective, String status) {
         int sessionId = sessionManager.getCurrentSessionId();
         String programHash = getProgramHash();
         if (sessionId == ChatSessionManager.NO_SESSION || programHash == null || content == null || content.isBlank()) {
             return;
         }
-        transcriptService.appendAssistantMessage(sessionId, programHash, content, new Timestamp(System.currentTimeMillis()));
+        Timestamp createdAt = new Timestamp(System.currentTimeMillis());
+        if (reactRunId != null && !reactRunId.isBlank()) {
+            transcriptService.appendReActAssistantMessage(sessionId, programHash, content, createdAt,
+                reactRunId, objective, status);
+        } else {
+            transcriptService.appendAssistantMessage(sessionId, programHash, content, createdAt);
+        }
     }
 
-    public void appendReActTodoSnapshot(String summary, List<TodoListManager.Todo> todos, Integer iteration) {
+    public void persistReActFinalAssistantMessage(String content) {
+        if (content == null || content.isBlank()) {
+            return;
+        }
+        String programHash = getProgramHash();
+        int sessionId = sessionManager.getCurrentSessionId();
+        if (programHash == null || sessionId == ChatSessionManager.NO_SESSION) {
+            return;
+        }
+
+        PersistedChatMessage msg = new PersistedChatMessage(
+            null,
+            RoleNormalizer.ROLE_ASSISTANT,
+            content,
+            new Timestamp(System.currentTimeMillis()),
+            messageStore.size()
+        );
+        msg.setProviderType(messageStore.getCurrentProviderType());
+        msg.setNativeMessageData("{\"role\":\"assistant\",\"content\":"
+            + new com.google.gson.Gson().toJson(content) + "}");
+        msg.setMessageType("standard");
+        messageStore.addMessage(msg);
+        int messageId = messageRepository.saveMessage(programHash, sessionId, msg);
+        if (messageId > 0) {
+            msg.setDbId(messageId);
+        }
+    }
+
+    public void appendReActTodoSnapshot(String summary, List<TodoListManager.Todo> todos,
+                                        Integer iteration, String reactRunId, String objective) {
         int sessionId = sessionManager.getCurrentSessionId();
         String programHash = getProgramHash();
         if (sessionId == ChatSessionManager.NO_SESSION || programHash == null) {
             return;
         }
-        transcriptService.appendTodoSnapshot(sessionId, programHash, summary, todos, iteration);
+        transcriptService.appendTodoSnapshot(sessionId, programHash, summary, todos, iteration, reactRunId, objective);
     }
 
-    public void appendReActFinding(String finding, Integer iteration) {
+    public void appendReActFinding(String finding, Integer iteration, String reactRunId) {
         int sessionId = sessionManager.getCurrentSessionId();
         String programHash = getProgramHash();
         if (sessionId == ChatSessionManager.NO_SESSION || programHash == null || finding == null || finding.isBlank()) {
             return;
         }
-        transcriptService.appendFinding(sessionId, programHash, finding, iteration);
+        transcriptService.appendFinding(sessionId, programHash, finding, iteration, reactRunId);
     }
 
-    public void appendReActNotice(String title, String content, Integer iteration, String category) {
+    public void appendReActNotice(String title, String content, Integer iteration, String category,
+                                  String reactRunId, String objective) {
         int sessionId = sessionManager.getCurrentSessionId();
         String programHash = getProgramHash();
         if (sessionId == ChatSessionManager.NO_SESSION || programHash == null) {
             return;
         }
-        transcriptService.appendIterationNotice(sessionId, programHash, title, content, iteration, category);
+        transcriptService.appendIterationNotice(sessionId, programHash, title, content, iteration, category,
+            reactRunId, objective);
     }
 
     public ToolApprovalService getToolApprovalService() {
