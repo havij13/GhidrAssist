@@ -64,7 +64,7 @@ public class TranscriptRenderer {
         html.append("<html><head><style>");
         html.append(MarkdownHelper.getThemeAwareCSS());
         html.append(".ga-transcript{margin:0;padding:0;width:100%;}");
-        html.append(".ga-card-table{width:100%;margin:8px 0;border-collapse:collapse;table-layout:fixed;}");
+        html.append(".ga-card-table{width:100%;margin:8px 0;border-collapse:collapse;table-layout:fixed;border:1px solid #5a636c;}");
         html.append(".ga-meta{font-size:9px;color:#777;}");
         html.append(".ga-body{padding:8px;width:100%;}");
         html.append(".ga-block{margin-top:6px;}");
@@ -326,7 +326,7 @@ public class TranscriptRenderer {
     private String startCardTable(String badge, String accentColor, String title, Timestamp timestamp,
                                   String source, String riskTier) {
         StringBuilder html = new StringBuilder();
-        html.append("<table class='ga-card-table' border='1' cellspacing='0' cellpadding='0' width='100%'>");
+        html.append("<table class='ga-card-table' cellspacing='0' cellpadding='0' width='100%'>");
         html.append("<tr><td bgcolor='").append(accentColor)
             .append("' width='8' valign='top'>&nbsp;</td>");
         html.append("<td class='ga-body' width='100%'>");
