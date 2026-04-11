@@ -146,6 +146,7 @@ public class GeminiOAuthProvider extends APIProvider implements FunctionCallingP
 
     private Headers.Builder getGeminiHeaders() throws IOException {
         String accessToken = tokenManager.getValidAccessToken();
+        persistCredentialsIfUpdated();
 
         return new Headers.Builder()
             .add("Authorization", "Bearer " + accessToken)
@@ -166,6 +167,17 @@ public class GeminiOAuthProvider extends APIProvider implements FunctionCallingP
         else if ("aarch64".equals(arch) || "arm64".equals(arch)) arch = "arm64";
 
         return "GeminiCLI/" + GEMINI_CLI_VERSION + "/" + this.model + " (" + platform + "; " + arch + ")";
+    }
+
+    private void persistCredentialsIfUpdated() {
+        String credentialsJson = getCredentialsJson();
+        if (credentialsJson == null || credentialsJson.isBlank() || credentialsJson.equals(this.key)) {
+            return;
+        }
+
+        if (APIProviderConfigStore.updateProviderKey(this.name, credentialsJson)) {
+            this.key = credentialsJson;
+        }
     }
 
     private String getMethodUrl(String method) {

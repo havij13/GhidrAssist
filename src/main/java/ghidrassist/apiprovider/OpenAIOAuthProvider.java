@@ -151,6 +151,7 @@ public class OpenAIOAuthProvider extends APIProvider implements FunctionCallingP
      */
     private Headers.Builder getCodexHeaders() throws IOException {
         String accessToken = tokenManager.getValidAccessToken();
+        persistCredentialsIfUpdated();
         
         // Match Python client header names exactly (lowercase)
         Headers.Builder headers = new Headers.Builder()
@@ -171,6 +172,7 @@ public class OpenAIOAuthProvider extends APIProvider implements FunctionCallingP
 
     private Headers getModelDiscoveryHeaders() throws IOException {
         String accessToken = tokenManager.getValidAccessToken();
+        persistCredentialsIfUpdated();
 
         Headers.Builder headers = new Headers.Builder()
             .add("Authorization", "Bearer " + accessToken)
@@ -182,6 +184,17 @@ public class OpenAIOAuthProvider extends APIProvider implements FunctionCallingP
         }
 
         return headers.build();
+    }
+
+    private void persistCredentialsIfUpdated() {
+        String credentialsJson = getCredentialsJson();
+        if (credentialsJson == null || credentialsJson.isBlank() || credentialsJson.equals(this.key)) {
+            return;
+        }
+
+        if (APIProviderConfigStore.updateProviderKey(this.name, credentialsJson)) {
+            this.key = credentialsJson;
+        }
     }
 
     private JsonObject parseModelDiscoveryPayload(String responseBody) throws APIProviderException {
