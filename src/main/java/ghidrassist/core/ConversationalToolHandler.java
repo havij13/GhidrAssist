@@ -55,7 +55,6 @@ public class ConversationalToolHandler {
     private static final double COMPRESSION_THRESHOLD = 0.75; // Trigger compression at 75% of char limit
     private static final int MIN_RECENT_MESSAGES = 8; // Always keep last 8 messages
     private final int maxToolRounds; // Maximum tool calling rounds per iteration (configurable)
-    private static final int API_TIMEOUT_SECONDS = 300; // Timeout for blocking API calls (generous for rate limit retries)
 
     private static final String SUMMARY_PROMPT = "Summarize the following investigation conversation concisely.\n\n" +
         "Preserve these key elements:\n" +
@@ -305,7 +304,7 @@ public class ConversationalToolHandler {
                 apiClient.getProvider() instanceof LMStudioProvider) {
                 streamingConversationWithFunctions();
             } else {
-                // Non-streaming providers (OpenWebUI, Ollama, etc.) - use timeout protection
+                // Non-streaming providers rely on the selected provider/client timeout.
                 CompletableFuture<String> apiFuture = CompletableFuture.supplyAsync(() -> {
                     try {
                         // Check cancellation before making API call
@@ -321,9 +320,7 @@ public class ConversationalToolHandler {
                     }
                 });
 
-                // Apply timeout to prevent indefinite hangs
                 apiFuture
-                    .orTimeout(API_TIMEOUT_SECONDS, java.util.concurrent.TimeUnit.SECONDS)
                     .thenAccept(fullResponse -> {
                         // Check cancellation after API call
                         if (isCancelled || fullResponse == null) {
@@ -335,20 +332,6 @@ public class ConversationalToolHandler {
                     })
                     .exceptionally(e -> {
                         Throwable cause = e.getCause() != null ? e.getCause() : e;
-
-                        // Handle timeout specifically
-                        if (e instanceof java.util.concurrent.TimeoutException ||
-                            cause instanceof java.util.concurrent.TimeoutException) {
-                            Msg.warn(this, "API call timed out after " + API_TIMEOUT_SECONDS + " seconds");
-                            isConversationActive = false;
-                            userHandler.onUpdate("❌ **Request timed out** - The model stopped responding. Please try again.\n");
-                            userHandler.onError(new Exception("API request timed out after " + API_TIMEOUT_SECONDS + " seconds. The model may be overloaded."));
-
-                            if (onCompletionCallback != null) {
-                                onCompletionCallback.run();
-                            }
-                            return null;
-                        }
 
                         // Handle rate limit errors - always retry, never give up
                         String errorMsg = cause.getMessage() != null ? cause.getMessage() : "";

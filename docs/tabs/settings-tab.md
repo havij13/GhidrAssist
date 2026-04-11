@@ -138,7 +138,7 @@ Configure local storage paths:
 Additional analysis controls:
 
 - **Max Tool Calls/Iteration**: Limits tool calls in ReAct loops
-- **API Timeout (seconds)**: Request timeout for LLM APIs
+- **API Timeout (seconds)**: Request timeout for LLM APIs, including ReAct planning/synthesis and non-streaming tool-calling requests
 
 ## Related Documentation
 

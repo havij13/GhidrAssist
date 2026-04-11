@@ -62,6 +62,10 @@ public class ReActOrchestrator {
 
     // Cancellation support
     private final AtomicBoolean cancelled = new AtomicBoolean(false);
+    private final Object analysisStateLock = new Object();
+    private volatile CompletableFuture<ReActResult> activeResultFuture;
+    private volatile Instant activeStartTime;
+    private volatile FindingsCache activeFindings;
 
     public ReActOrchestrator(APIProviderConfig providerConfig, GhidrAssistPlugin plugin) {
         this(providerConfig, plugin, 18, 8000, 10);
@@ -276,102 +280,105 @@ public class ReActOrchestrator {
         ReActProgressHandler handler
     ) {
         CompletableFuture<ReActResult> resultFuture = new CompletableFuture<>();
+        resultFuture.whenComplete((result, error) -> clearActiveAnalysis(resultFuture));
+        Instant startTime = Instant.now();
+        cancelled.set(false);
 
-        // Run asynchronously
-        CompletableFuture.runAsync(() -> {
-            Instant startTime = Instant.now();
-            cancelled.set(false);
+        try {
+            // Initialize components
+            TodoListManager todoManager = new TodoListManager(query);
+            FindingsCache findings = new FindingsCache();
+            ContextSummarizer summarizer = new ContextSummarizer(contextSummaryThreshold);
+            registerActiveAnalysis(resultFuture, startTime, findings);
 
-            try {
-                // Initialize components
-                TodoListManager todoManager = new TodoListManager(query);
-                FindingsCache findings = new FindingsCache();
-                ContextSummarizer summarizer = new ContextSummarizer(contextSummaryThreshold);
+            handler.onStart(query);
 
-                handler.onStart(query);
+            if (cancelled.get() || !handler.shouldContinue()) {
+                completeWithCancellation(resultFuture, findings, startTime, handler);
+                return resultFuture;
+            }
 
-                // First, ask LLM to propose investigation steps
-                Msg.info(this, "Asking LLM to plan investigation steps...");
-                String planningPrompt = ReActPrompts.getPlanningPrompt(query, initialContext);
+            // First, ask LLM to propose investigation steps
+            Msg.info(this, "Asking LLM to plan investigation steps...");
+            String planningPrompt = ReActPrompts.getPlanningPrompt(query, initialContext);
 
-                // Get todo plan from LLM (synchronous for simplicity)
-                CompletableFuture<String> planningFuture = new CompletableFuture<>();
-                llmApi.sendRequestAsync(planningPrompt, new LlmApi.LlmResponseHandler() {
-                    private final StringBuilder planResponse = new StringBuilder();
-
-                    @Override
-                    public void onStart() {
-                        planResponse.setLength(0);
-                    }
-
-                    @Override
-                    public void onUpdate(String partialResponse) {
-                        planResponse.append(partialResponse);
-                    }
-
-                    @Override
-                    public void onComplete(String fullResponse) {
-                        planningFuture.complete(fullResponse);
-                    }
-
-                    @Override
-                    public void onError(Throwable error) {
-                        planningFuture.completeExceptionally(error);
-                    }
-
-                    @Override
-                    public boolean shouldContinue() {
-                        return !cancelled.get() && handler.shouldContinue();
-                    }
-                });
-
-                // Wait for planning to complete (generous timeout to accommodate rate limiting and token refresh)
-                String todoList = planningFuture.get(180, java.util.concurrent.TimeUnit.SECONDS);
-                todoManager.initializeFromLLMResponse(todoList);
-                Msg.info(this, "Investigation plan created with " + todoManager.getAllTodos().size() + " steps");
-
-                handler.onTodosUpdated(
-                    todoManager.formatForPrompt(),
-                    todoManager.getAllTodos(),
-                    todoManager.toCompactString());
-
-                // Get available tools from all providers via ToolRegistry
-                List<Map<String, Object>> tools = getToolsAsFunction();
-                if (tools.isEmpty()) {
-                    Msg.warn(this, "No tools available - analysis may be limited");
-                } else {
-                    Msg.info(this, "Loaded " + tools.size() + " tools from ToolRegistry");
+            llmApi.sendRequestAsync(planningPrompt, new LlmApi.LlmResponseHandler() {
+                @Override
+                public void onStart() {
                 }
 
-                // Track iteration count
-                AtomicInteger iteration = new AtomicInteger(0);
-                AtomicInteger toolCallCount = new AtomicInteger(0);
+                @Override
+                public void onUpdate(String partialResponse) {
+                }
 
-                // Main ReAct loop
-                runReActIteration(
-                    query,
-                    initialContext,
-                    todoManager,
-                    findings,
-                    summarizer,
-                    tools,
-                    iteration,
-                    toolCallCount,
-                    handler,
-                    startTime,
-                    resultFuture
-                );
+                @Override
+                public void onComplete(String fullResponse) {
+                    if (resultFuture.isDone()) {
+                        return;
+                    }
+                    if (cancelled.get() || !handler.shouldContinue()) {
+                        completeWithCancellation(resultFuture, findings, startTime, handler);
+                        return;
+                    }
 
-            } catch (Exception e) {
-                Msg.error(this, "ReAct analysis error: " + e.getMessage(), e);
-                Duration duration = Duration.between(startTime, Instant.now());
-                FindingsCache emptyFindings = new FindingsCache();
-                ReActResult result = ReActResult.error(e, emptyFindings, duration);
-                handler.onError(e);
-                handler.onComplete(result);
-                resultFuture.complete(result);
-            }
-        });
+                    try {
+                        todoManager.initializeFromLLMResponse(fullResponse);
+                        Msg.info(ReActOrchestrator.this, "Investigation plan created with " +
+                            todoManager.getAllTodos().size() + " steps");
+
+                        handler.onTodosUpdated(
+                            todoManager.formatForPrompt(),
+                            todoManager.getAllTodos(),
+                            todoManager.toCompactString());
+
+                        // Get available tools from all providers via ToolRegistry
+                        List<Map<String, Object>> tools = getToolsAsFunction();
+                        if (tools.isEmpty()) {
+                            Msg.warn(ReActOrchestrator.this, "No tools available - analysis may be limited");
+                        } else {
+                            Msg.info(ReActOrchestrator.this,
+                                "Loaded " + tools.size() + " tools from ToolRegistry");
+                        }
+
+                        // Track iteration count
+                        AtomicInteger iteration = new AtomicInteger(0);
+                        AtomicInteger toolCallCount = new AtomicInteger(0);
+
+                        // Main ReAct loop
+                        runReActIteration(
+                            query,
+                            initialContext,
+                            todoManager,
+                            findings,
+                            summarizer,
+                            tools,
+                            iteration,
+                            toolCallCount,
+                            handler,
+                            startTime,
+                            resultFuture
+                        );
+                    } catch (Exception e) {
+                        Msg.error(ReActOrchestrator.this,
+                            "ReAct planning continuation failed: " + e.getMessage(), e);
+                        completeWithError(resultFuture, e, findings, startTime, handler);
+                    }
+                }
+
+                @Override
+                public void onError(Throwable error) {
+                    completeWithError(resultFuture, error, findings, startTime, handler);
+                }
+
+                @Override
+                public boolean shouldContinue() {
+                    return !resultFuture.isDone() && !cancelled.get() && handler.shouldContinue();
+                }
+            });
+        } catch (Exception e) {
+            Msg.error(this, "ReAct analysis error: " + e.getMessage(), e);
+            completeWithError(resultFuture, e, new FindingsCache(), startTime, handler);
+        }
 
         return resultFuture;
     }
@@ -394,8 +401,7 @@ public class ReActOrchestrator {
     ) {
         // Check termination conditions
         if (cancelled.get() || !handler.shouldContinue()) {
-            Duration duration = Duration.between(startTime, Instant.now());
-            resultFuture.complete(ReActResult.cancelled(findings, duration));
+            completeWithCancellation(resultFuture, findings, startTime, handler);
             return;
         }
 
@@ -479,6 +485,14 @@ public class ReActOrchestrator {
 
             @Override
             public void onComplete(String fullResponse) {
+                if (resultFuture.isDone()) {
+                    return;
+                }
+                if (cancelled.get() || !handler.shouldContinue()) {
+                    completeWithCancellation(resultFuture, findings, startTime, handler);
+                    return;
+                }
+
                 // Defense-in-depth: if fullResponse is just a status message (e.g. from
                 // max tool rounds), use the responseBuffer which accumulated all streamed content
                 String contentForFindings = fullResponse;
@@ -532,6 +546,10 @@ public class ReActOrchestrator {
 
             @Override
             public void onError(Throwable error) {
+                if (resultFuture.isDone()) {
+                    return;
+                }
+
                 // Salvage any findings accumulated from tool calls before the error
                 String buffered = responseBuffer.toString();
                 if (!buffered.isEmpty()) {
@@ -539,17 +557,12 @@ public class ReActOrchestrator {
                     findings.addIterationSummary(buffered);
                 }
 
-                Duration duration = Duration.between(startTime, Instant.now());
-                // Pass findings (not null) so accumulated work isn't lost
-                ReActResult result = ReActResult.error(error, findings, duration);
-                handler.onError(error);
-                handler.onComplete(result);
-                resultFuture.complete(result);
+                completeWithError(resultFuture, error, findings, startTime, handler);
             }
 
             @Override
             public boolean shouldContinue() {
-                return handler.shouldContinue() && !cancelled.get();
+                return !resultFuture.isDone() && handler.shouldContinue() && !cancelled.get();
             }
         };
 
@@ -591,6 +604,9 @@ public class ReActOrchestrator {
 
             @Override
             public void onUpdate(String partialResponse) {
+                if (resultFuture.isDone() || cancelled.get()) {
+                    return;
+                }
                 answer.append(partialResponse);
                 // Stream synthesis to UI
                 handler.onSynthesisChunk(partialResponse);
@@ -598,7 +614,13 @@ public class ReActOrchestrator {
 
             @Override
             public void onComplete(String fullResponse) {
-                Duration duration = Duration.between(startTime, Instant.now());
+                if (resultFuture.isDone()) {
+                    return;
+                }
+                if (cancelled.get() || !handler.shouldContinue()) {
+                    completeWithCancellation(resultFuture, findings, startTime, handler);
+                    return;
+                }
 
                 // Build result with the provided completion status
                 ReActResult result = new ReActResult.Builder()
@@ -610,26 +632,20 @@ public class ReActOrchestrator {
                     .iterationSummaries(findings.getIterationSummaries())
                     .iterationCount(iterationCount)
                     .toolCallCount(toolCallCount)
-                    .duration(duration)
+                    .duration(Duration.between(startTime, Instant.now()))
                     .build();
 
-                handler.onComplete(result);
-                resultFuture.complete(result);
+                completeWithResult(resultFuture, result, handler);
             }
 
             @Override
             public void onError(Throwable error) {
-                Duration duration = Duration.between(startTime, Instant.now());
-                // Pass findings so accumulated work from iterations isn't lost
-                ReActResult result = ReActResult.error(error, findings, duration);
-                handler.onError(error);
-                handler.onComplete(result);
-                resultFuture.complete(result);
+                completeWithError(resultFuture, error, findings, startTime, handler);
             }
 
             @Override
             public boolean shouldContinue() {
-                return true;
+                return !resultFuture.isDone() && !cancelled.get() && handler.shouldContinue();
             }
         });
     }
@@ -686,12 +702,20 @@ public class ReActOrchestrator {
 
             @Override
             public boolean shouldContinue() {
-                return !cancelled.get() && handler.shouldContinue();
+                return !resultFuture.isDone() && !cancelled.get() && handler.shouldContinue();
             }
         });
 
         // Wait for reflection and decide next action
         reflectionFuture.thenAccept(reflectionResponse -> {
+            if (resultFuture.isDone()) {
+                return;
+            }
+            if (cancelled.get() || !handler.shouldContinue()) {
+                completeWithCancellation(resultFuture, findings, startTime, handler);
+                return;
+            }
+
             String trimmedResponse = reflectionResponse.trim();
 
             // Parse structured reflection response for plan updates
@@ -756,6 +780,13 @@ public class ReActOrchestrator {
                 );
             }
         }).exceptionally(error -> {
+            if (resultFuture.isDone()) {
+                return null;
+            }
+            if (cancelled.get() || !handler.shouldContinue()) {
+                completeWithCancellation(resultFuture, findings, startTime, handler);
+                return null;
+            }
             Msg.error(this, "Reflection handling failed: " + error.getMessage(), error);
             handler.onThought("⚠️ **Error in reflection**: " + error.getMessage() + ". Continuing investigation...\n\n", currentIteration);
             // On error, continue investigation
@@ -880,6 +911,64 @@ public class ReActOrchestrator {
         return parsed;
     }
 
+    private void registerActiveAnalysis(
+        CompletableFuture<ReActResult> resultFuture,
+        Instant startTime,
+        FindingsCache findings
+    ) {
+        synchronized (analysisStateLock) {
+            activeResultFuture = resultFuture;
+            activeStartTime = startTime;
+            activeFindings = findings;
+        }
+    }
+
+    private void clearActiveAnalysis(CompletableFuture<ReActResult> resultFuture) {
+        synchronized (analysisStateLock) {
+            if (activeResultFuture == resultFuture) {
+                activeResultFuture = null;
+                activeStartTime = null;
+                activeFindings = null;
+            }
+        }
+    }
+
+    private void completeWithResult(
+        CompletableFuture<ReActResult> resultFuture,
+        ReActResult result,
+        ReActProgressHandler handler
+    ) {
+        if (resultFuture.complete(result)) {
+            handler.onComplete(result);
+        }
+    }
+
+    private void completeWithError(
+        CompletableFuture<ReActResult> resultFuture,
+        Throwable error,
+        FindingsCache findings,
+        Instant startTime,
+        ReActProgressHandler handler
+    ) {
+        ReActResult result = ReActResult.error(error, findings, Duration.between(startTime, Instant.now()));
+        if (resultFuture.complete(result)) {
+            handler.onError(error);
+            handler.onComplete(result);
+        }
+    }
+
+    private void completeWithCancellation(
+        CompletableFuture<ReActResult> resultFuture,
+        FindingsCache findings,
+        Instant startTime,
+        ReActProgressHandler handler
+    ) {
+        ReActResult result = ReActResult.cancelled(findings, Duration.between(startTime, Instant.now()));
+        if (resultFuture.complete(result)) {
+            handler.onComplete(result);
+        }
+    }
+
     /**
      * Helper class for parsed reflection response.
      */
@@ -897,5 +986,16 @@ public class ReActOrchestrator {
     public void cancel() {
         cancelled.set(true);
         llmApi.cancelCurrentRequest();
+
+        CompletableFuture<ReActResult> resultFuture = activeResultFuture;
+        Instant startTime = activeStartTime;
+        FindingsCache findings = activeFindings;
+        if (resultFuture != null && startTime != null) {
+            ReActResult cancelledResult = ReActResult.cancelled(
+                findings,
+                Duration.between(startTime, Instant.now())
+            );
+            resultFuture.complete(cancelledResult);
+        }
     }
 }
