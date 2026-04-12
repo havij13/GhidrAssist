@@ -1357,6 +1357,16 @@ public class SymGraphController {
             case "mipsel":
             case "mipseb":
                 return "mips";
+            case "m68k":
+            case "68k":
+            case "68000":
+            case "68010":
+            case "68020":
+            case "68030":
+            case "68040":
+            case "68060":
+            case "mc68000":
+                return "m68k";
             case "powerpc64":
             case "ppc64":
             case "ppc64le":
