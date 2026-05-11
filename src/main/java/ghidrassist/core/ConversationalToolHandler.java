@@ -575,8 +575,13 @@ public class ConversationalToolHandler {
                     }
 
                     @Override
-                    public void onStreamComplete(String stopReason, String fullText, List<OpenAIPlatformApiProvider.ToolCall> toolCalls) {
+                    public void onStreamComplete(String stopReason, String fullText, String reasoningContent, List<OpenAIPlatformApiProvider.ToolCall> toolCalls) {
                         ChatMessage assistantMsg = new ChatMessage(ChatMessage.ChatMessageRole.ASSISTANT, fullText);
+
+                        // Store reasoning_content so it can be passed back on the next turn (DeepSeek requirement)
+                        if (reasoningContent != null && !reasoningContent.isEmpty()) {
+                            assistantMsg.setThinkingContent(reasoningContent);
+                        }
 
                         // Only attach tool calls when stopReason indicates tool calling.
                         // If stopReason is "stop" but streaming accumulated partial tool call deltas,
@@ -1043,7 +1048,15 @@ public class ConversationalToolHandler {
             if (assistantMessage.has("tool_calls")) {
                 assistantMsg.setToolCalls(assistantMessage.getAsJsonArray("tool_calls"));
             }
-            
+
+            // Store reasoning_content so it can be passed back on the next turn (DeepSeek requirement)
+            if (assistantMessage.has("reasoning_content") && !assistantMessage.get("reasoning_content").isJsonNull()) {
+                String reasoningContent = assistantMessage.get("reasoning_content").getAsString();
+                if (!reasoningContent.isEmpty()) {
+                    assistantMsg.setThinkingContent(reasoningContent);
+                }
+            }
+
             conversationHistory.add(assistantMsg);
             
             // Extract tool calls

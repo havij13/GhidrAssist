@@ -708,6 +708,12 @@ public class OpenAIPlatformApiProvider extends APIProvider implements FunctionCa
                 messageObj.addProperty("content", "");
             }
 
+            // Include reasoning_content for assistant messages (required by DeepSeek thinking mode)
+            if (ChatMessage.ChatMessageRole.ASSISTANT.equals(message.getRole()) &&
+                    message.getThinkingContent() != null && !message.getThinkingContent().isEmpty()) {
+                messageObj.addProperty("reasoning_content", message.getThinkingContent());
+            }
+
             // Handle tool calls for assistant messages
             if (message.getToolCalls() != null) {
                 messageObj.add("tool_calls", message.getToolCalls());
@@ -917,7 +923,7 @@ public class OpenAIPlatformApiProvider extends APIProvider implements FunctionCa
          * @param fullText The complete text content
          * @param toolCalls List of tool calls (empty if none)
          */
-        void onStreamComplete(String stopReason, String fullText, List<ToolCall> toolCalls);
+        void onStreamComplete(String stopReason, String fullText, String reasoningContent, List<ToolCall> toolCalls);
 
         /**
          * Called when an error occurs during streaming.
@@ -1026,6 +1032,7 @@ public class OpenAIPlatformApiProvider extends APIProvider implements FunctionCa
 
                     BufferedSource source = responseBody.source();
                     StringBuilder textBuilder = new StringBuilder();
+                    StringBuilder reasoningBuilder = new StringBuilder();
                     java.util.Map<Integer, ToolCallAccumulator> toolCallsMap = new java.util.HashMap<>();
                     String finishReason = "stop";
 
@@ -1059,7 +1066,8 @@ public class OpenAIPlatformApiProvider extends APIProvider implements FunctionCa
                                             toolCalls.add(new ToolCall(tcId, acc.name, args));
                                         });
 
-                                    handler.onStreamComplete(finishReason, textBuilder.toString(), toolCalls);
+                                    handler.onStreamComplete(finishReason, textBuilder.toString(),
+                                        reasoningBuilder.toString(), toolCalls);
                                     return;
                                 }
 
@@ -1080,6 +1088,11 @@ public class OpenAIPlatformApiProvider extends APIProvider implements FunctionCa
                                                     String content = delta.get("content").getAsString();
                                                     textBuilder.append(content);
                                                     handler.onTextUpdate(content);
+                                                }
+
+                                                // Capture reasoning_content (DeepSeek thinking mode)
+                                                if (delta.has("reasoning_content") && !delta.get("reasoning_content").isJsonNull()) {
+                                                    reasoningBuilder.append(delta.get("reasoning_content").getAsString());
                                                 }
 
                                                 // Buffer tool calls
