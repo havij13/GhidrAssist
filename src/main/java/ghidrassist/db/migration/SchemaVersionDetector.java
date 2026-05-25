@@ -26,8 +26,8 @@ public class SchemaVersionDetector {
     /** Graph-RAG with security columns, without user_edited */
     public static final int VERSION_GRAPHRAG_SECURITY = 3;
 
-    /** Current full schema with graph-node category field */
-    public static final int VERSION_CURRENT = 10;
+    /** Current full schema with canonical per-message chat history */
+    public static final int VERSION_CURRENT = 14;
 
     private final Connection connection;
 
@@ -122,7 +122,7 @@ public class SchemaVersionDetector {
             return 9;
         }
 
-        return VERSION_CURRENT;
+        return 10;
     }
 
     /**

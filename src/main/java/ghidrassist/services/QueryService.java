@@ -43,8 +43,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.function.Consumer;
 import java.util.concurrent.atomic.AtomicLong;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
 /**
  * Service for handling custom queries and conversations.
@@ -1083,40 +1081,6 @@ public class QueryService {
     }
 
     /**
-     * Migrate legacy conversation blob to per-message storage
-     */
-    public List<PersistedChatMessage> migrateFromLegacyBlob(String conversation) {
-        List<PersistedChatMessage> messages = new ArrayList<>();
-        if (conversation == null || conversation.isEmpty()) {
-            return messages;
-        }
-
-        Pattern pattern = Pattern.compile(
-            "\\*\\*(User|Assistant|Error|Tool Call)\\*\\*:\\s*\\n(.*?)(?=\\*\\*(User|Assistant|Error|Tool Call)\\*\\*:|$)",
-            Pattern.DOTALL
-        );
-
-        Matcher matcher = pattern.matcher(conversation);
-        int order = 0;
-        while (matcher.find()) {
-            String role = RoleNormalizer.normalize(matcher.group(1));
-            String content = matcher.group(2).trim();
-
-            PersistedChatMessage msg = new PersistedChatMessage(
-                null, role, content,
-                new Timestamp(System.currentTimeMillis()),
-                order++
-            );
-            msg.setProviderType("migrated");
-            msg.setMessageType("standard");
-            msg.setNativeMessageData("{}");
-            messages.add(msg);
-        }
-
-        return messages;
-    }
-
-    /**
      * Load messages from database for current session
      */
     public void loadMessagesFromDatabase() {
@@ -1130,22 +1094,9 @@ public class QueryService {
         }
 
         List<PersistedChatMessage> dbMessages = messageRepository.loadMessages(programHash, sessionId);
+        messageStore.setMessages(dbMessages);
         if (!dbMessages.isEmpty()) {
-            messageStore.setMessages(dbMessages);
             transcriptService.ensureBackfilledFromMessages(programHash, sessionId, dbMessages);
-        } else {
-            // Fall back to legacy blob and migrate
-            String conversation = sessionRepository.getLegacyConversation(sessionId);
-            if (conversation != null && !conversation.isEmpty()) {
-                List<PersistedChatMessage> migrated = migrateFromLegacyBlob(conversation);
-                messageStore.setMessages(migrated);
-                transcriptService.ensureBackfilledFromMessages(programHash, sessionId, migrated);
-
-                // Save migrated messages
-                for (PersistedChatMessage msg : migrated) {
-                    messageRepository.saveMessage(programHash, sessionId, msg);
-                }
-            }
         }
     }
 

@@ -755,37 +755,6 @@ public class AnalysisDB {
 
     // Chat History Methods
     
-    public int createChatSession(String programHash, String description, String conversation) {
-        String insertSQL = "INSERT INTO GHChatHistory (program_hash, description, conversation) VALUES (?, ?, ?)";
-        
-        try (PreparedStatement pstmt = connection.prepareStatement(insertSQL, Statement.RETURN_GENERATED_KEYS)) {
-            pstmt.setString(1, programHash);
-            pstmt.setString(2, description);
-            pstmt.setString(3, conversation);
-            pstmt.executeUpdate();
-            
-            ResultSet rs = pstmt.getGeneratedKeys();
-            if (rs.next()) {
-                return rs.getInt(1);
-            }
-        } catch (SQLException e) {
-            Msg.showError(this, null, "Database Error", "Failed to create chat session: " + e.getMessage());
-        }
-        return -1;
-    }
-    
-    public void updateChatSession(int sessionId, String conversation) {
-        String updateSQL = "UPDATE GHChatHistory SET conversation = ?, last_update = CURRENT_TIMESTAMP WHERE id = ?";
-        
-        try (PreparedStatement pstmt = connection.prepareStatement(updateSQL)) {
-            pstmt.setString(1, conversation);
-            pstmt.setInt(2, sessionId);
-            pstmt.executeUpdate();
-        } catch (SQLException e) {
-            Msg.showError(this, null, "Database Error", "Failed to update chat session: " + e.getMessage());
-        }
-    }
-    
     public void updateChatDescription(int sessionId, String description) {
         String updateSQL = "UPDATE GHChatHistory SET description = ? WHERE id = ?";
         
@@ -832,22 +801,6 @@ public class AnalysisDB {
         return sessions;
     }
     
-    public String getChatConversation(int sessionId) {
-        String selectSQL = "SELECT conversation FROM GHChatHistory WHERE id = ?";
-
-        try (PreparedStatement pstmt = connection.prepareStatement(selectSQL)) {
-            pstmt.setInt(1, sessionId);
-
-            ResultSet rs = pstmt.executeQuery();
-            if (rs.next()) {
-                return rs.getString("conversation");
-            }
-        } catch (SQLException e) {
-            Msg.showError(this, null, "Database Error", "Failed to retrieve chat conversation: " + e.getMessage());
-        }
-        return null;
-    }
-
     // Per-Message Storage Methods
 
     /**

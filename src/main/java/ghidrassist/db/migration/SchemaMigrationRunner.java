@@ -45,6 +45,7 @@ public class SchemaMigrationRunner {
         migrations.add(new V11_TranscriptAndApprovalSchema());
         migrations.add(new V12_TranscriptMessageLinkage());
         migrations.add(new V13_TranscriptConversationDedup());
+        migrations.add(new V14_CanonicalizeLegacyChatHistory());
 
         // Sort by version number to ensure correct order
         migrations.sort(Comparator.comparingInt(SchemaMigration::getVersion));

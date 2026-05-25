@@ -196,22 +196,6 @@ public class ChatHistoryDAO implements MessageRepository, ChatSessionRepository 
         return 1;
     }
 
-    @Override
-    public String getLegacyConversation(int sessionId) {
-        String sql = "SELECT conversation FROM GHChatHistory WHERE id = ?";
-
-        try (PreparedStatement pstmt = transactionManager.getConnection().prepareStatement(sql)) {
-            pstmt.setInt(1, sessionId);
-            ResultSet rs = pstmt.executeQuery();
-            if (rs.next()) {
-                return rs.getString("conversation");
-            }
-        } catch (SQLException e) {
-            Msg.error(this, "Failed to get legacy conversation: " + e.getMessage());
-        }
-        return null;
-    }
-
     // ==================== MessageRepository Implementation ====================
 
     @Override

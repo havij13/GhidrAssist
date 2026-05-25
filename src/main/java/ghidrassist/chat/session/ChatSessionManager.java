@@ -104,17 +104,7 @@ public class ChatSessionManager {
                 return false;
             }
 
-            // Load messages from database
             List<PersistedChatMessage> messages = messageRepository.loadMessages(programHash, sessionId);
-
-            // If no per-message storage, try legacy migration
-            if (messages.isEmpty() && !messageRepository.hasMessages(programHash, sessionId)) {
-                String legacyConversation = sessionRepository.getLegacyConversation(sessionId);
-                if (legacyConversation != null && !legacyConversation.isEmpty()) {
-                    // Migration will be handled by LegacyMigrator
-                    // For now, just note that legacy data exists
-                }
-            }
 
             // Update state
             messageStore.setMessages(messages);
