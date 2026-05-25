@@ -1426,6 +1426,9 @@ public class SymGraphController {
         if (lower.contains("mach-o") || lower.contains("darwin") || lower.contains("mac")) {
             return "macos";
         }
+        if (lower.contains("preferred executable format") || lower.contains("pef")) {
+            return "macos";
+        }
         if (lower.contains("ios") || lower.contains("iphone") || lower.contains("tvos") || lower.contains("watchos")) {
             return "ios";
         }
@@ -1459,7 +1462,7 @@ public class SymGraphController {
         if ("elf".equals(fileFormat)) {
             return "linux";
         }
-        if ("macho".equals(fileFormat) || "macho32".equals(fileFormat) || "macho64".equals(fileFormat)) {
+        if ("macho".equals(fileFormat) || "macho32".equals(fileFormat) || "macho64".equals(fileFormat) || "pef".equals(fileFormat)) {
             return "macos";
         }
         return null;
@@ -1478,6 +1481,9 @@ public class SymGraphController {
         }
         if (lower.contains("mach-o")) {
             return "macho";
+        }
+        if (lower.contains("preferred executable format") || lower.contains("pef")) {
+            return "pef";
         }
         if (lower.contains("coff")) {
             return "coff";
