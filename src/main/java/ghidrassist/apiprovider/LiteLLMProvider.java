@@ -392,6 +392,7 @@ public class LiteLLMProvider extends OpenAIPlatformApiProvider {
 
                     BufferedSource source = responseBody.source();
                     StringBuilder textBuilder = new StringBuilder();
+                    StringBuilder reasoningBuilder = new StringBuilder();
                     java.util.Map<Integer, ToolCallAccumulator> toolCallsMap = new java.util.HashMap<>();
                     String finishReason = "stop";
 
@@ -416,7 +417,8 @@ public class LiteLLMProvider extends OpenAIPlatformApiProvider {
                                                 toolCalls.add(new ToolCall(acc.id, acc.name, args));
                                             });
 
-                                    handler.onStreamComplete(finishReason, textBuilder.toString(), toolCalls);
+                                    handler.onStreamComplete(finishReason, textBuilder.toString(),
+                                        reasoningBuilder.toString(), toolCalls);
                                     return;
                                 }
 
@@ -436,6 +438,11 @@ public class LiteLLMProvider extends OpenAIPlatformApiProvider {
                                                     String content = delta.get("content").getAsString();
                                                     textBuilder.append(content);
                                                     handler.onTextUpdate(content);
+                                                }
+
+                                                // Capture reasoning_content (DeepSeek thinking mode)
+                                                if (delta.has("reasoning_content") && !delta.get("reasoning_content").isJsonNull()) {
+                                                    reasoningBuilder.append(delta.get("reasoning_content").getAsString());
                                                 }
 
                                                 // Buffer tool calls
