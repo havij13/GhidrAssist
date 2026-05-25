@@ -94,6 +94,7 @@ public class TabController {
 
     // UI state
     private volatile boolean isQueryRunning;
+    private volatile boolean isAgentPlanPending;
     private volatile boolean isLineQueryRunning;
     private volatile boolean isCancelling;  // Guard against concurrent operations during cancellation
     private volatile ReasoningConfig currentReasoningConfig;  // Current reasoning/thinking effort setting
@@ -118,6 +119,11 @@ public class TabController {
     private SettingsTab settingsTab;
     private SemanticGraphTab semanticGraphTab;
     private SymGraphTab symGraphTab;
+
+    private volatile String pendingAgentPlan;
+    private volatile String pendingAgentQuery;
+    private volatile String pendingAgentInitialContext;
+    private volatile String pendingAgentRunId;
 
     // Database for semantic graph operations
     private final AnalysisDB analysisDB;
@@ -851,6 +857,11 @@ public class TabController {
             return;
         }
 
+        if (useAgentic && isAgentPlanPending) {
+            refineAgentPlan(query);
+            return;
+        }
+
         // Agentic mode requires MCP tools
         if (useAgentic && !useMCP) {
             Msg.showInfo(getClass(), queryTab, "MCP Required",
@@ -899,12 +910,15 @@ public class TabController {
         final String reactRunId = UUID.randomUUID().toString();
 
         // Add user query to conversation history and ensure we have a session
+        final String processedQuery;
         try {
-            String processedQuery = ghidrassist.core.QueryProcessor.processMacrosInQuery(query, plugin);
+            processedQuery = ghidrassist.core.QueryProcessor.processMacrosInQuery(query, plugin);
             queryService.addUserQuery(processedQuery);
             queryService.beginReActRun(reactRunId, processedQuery);
         } catch (Exception e) {
             Msg.error(this, "Failed to add query to conversation history: " + e.getMessage(), e);
+            setUIState(false, "Submit", null);
+            return;
         }
 
         // Get initial context (decompiled code if available)
@@ -919,6 +933,69 @@ public class TabController {
         final String reactInitialContext = (continuationBridge != null && !continuationBridge.isBlank())
             ? "## Prior Investigation Context\n" + continuationBridge + "\n\n## Current Binary Context\n" + initialContext
             : initialContext;
+
+        pendingAgentRunId = reactRunId;
+        pendingAgentQuery = processedQuery;
+        pendingAgentInitialContext = reactInitialContext;
+        pendingAgentPlan = null;
+        requestAgentPlan(processedQuery, reactInitialContext, null, null);
+    }
+
+    private void requestAgentPlan(String query, String reactInitialContext, String previousPlan, String refinement) {
+        String planningPrompt = ghidrassist.agent.react.ReActPrompts.getPlanningPrompt(query, reactInitialContext);
+        if (previousPlan != null && !previousPlan.isBlank()) {
+            planningPrompt += "\n\n## Previous Proposed Plan\n" + previousPlan + "\n";
+        }
+        if (refinement != null && !refinement.isBlank()) {
+            planningPrompt += "\n\n## User Refinement Request\n" + refinement
+                + "\n\nRevise the plan to incorporate this feedback. Return only the updated markdown checklist.";
+        } else {
+            planningPrompt += "\n\nReturn only the proposed markdown checklist and any brief assumptions needed to execute it.";
+        }
+
+        LlmApi plannerApi;
+        try {
+            plannerApi = getCurrentLlmApi();
+        } catch (Exception e) {
+            Msg.showError(getClass(), queryTab, "Agentic Planning Error",
+                "Failed to initialize LLM provider: " + e.getMessage());
+            setUIState(false, "Submit", null);
+            return;
+        }
+        currentLlmApi = plannerApi;
+        plannerApi.sendRequestAsync(planningPrompt, new LlmApi.LlmResponseHandler() {
+            private final StringBuilder planBuffer = new StringBuilder();
+
+            @Override public void onStart() { planBuffer.setLength(0); }
+            @Override public void onUpdate(String partialResponse) { planBuffer.append(partialResponse); }
+            @Override public void onComplete(String fullResponse) {
+                SwingUtilities.invokeLater(() -> {
+                    pendingAgentPlan = (fullResponse != null && !fullResponse.isBlank())
+                        ? fullResponse
+                        : planBuffer.toString();
+                    isAgentPlanPending = true;
+                    isQueryRunning = false;
+                    queryTab.setSubmitButtonText("Submit");
+                    queryTab.setPendingPlan(pendingAgentPlan);
+                });
+            }
+            @Override public void onError(Throwable error) {
+                SwingUtilities.invokeLater(() -> {
+                    Msg.showError(getClass(), queryTab, "Agentic Planning Error",
+                        "Planning failed: " + error.getMessage());
+                    setUIState(false, "Submit", null);
+                    isAgentPlanPending = false;
+                });
+            }
+            @Override public boolean shouldContinue() {
+                return !isCancelling;
+            }
+        });
+    }
+
+    private void executeApprovedAgenticQuery(String query, String reactInitialContext,
+                                             String reactRunId, String approvedPlan) {
+        setUIState(true, "Stop", null);
 
         // Container to hold iteration history so it can be accessed in the final result handler
         final StringBuilder[] historyContainer = new StringBuilder[]{new StringBuilder()};
@@ -981,7 +1058,8 @@ public class TabController {
                 query,
                 reactInitialContext,
                 String.valueOf(queryService.getCurrentSessionId()),
-                progressHandler
+                progressHandler,
+                approvedPlan
             );
         }).thenAccept(result -> {
             // Display result on EDT
@@ -1054,6 +1132,46 @@ public class TabController {
             });
             return null;
         });
+    }
+
+    public void handleAgentPlanApproved() {
+        if (!isAgentPlanPending || pendingAgentPlan == null || pendingAgentPlan.isBlank()) {
+            return;
+        }
+        String query = pendingAgentQuery;
+        String initialContext = pendingAgentInitialContext;
+        String runId = pendingAgentRunId;
+        String approvedPlan = pendingAgentPlan;
+
+        isAgentPlanPending = false;
+        pendingAgentPlan = null;
+        if (queryTab != null) {
+            queryTab.setPendingPlan(null);
+        }
+        executeApprovedAgenticQuery(query, initialContext, runId, approvedPlan);
+    }
+
+    public void handleAgentPlanCancelled() {
+        isAgentPlanPending = false;
+        pendingAgentPlan = null;
+        if (pendingAgentRunId != null) {
+            queryService.endReActRun(pendingAgentRunId);
+        }
+        pendingAgentRunId = null;
+        pendingAgentQuery = null;
+        pendingAgentInitialContext = null;
+        if (queryTab != null) {
+            queryTab.setPendingPlan(null);
+        }
+        setUIState(false, "Submit", null);
+    }
+
+    private void refineAgentPlan(String refinement) {
+        if (!isAgentPlanPending || pendingAgentQuery == null || pendingAgentInitialContext == null) {
+            return;
+        }
+        setUIState(true, "Stop", null);
+        requestAgentPlan(pendingAgentQuery, pendingAgentInitialContext, pendingAgentPlan, refinement);
     }
 
     // ==== Action Analysis Operations ====
@@ -1793,6 +1911,11 @@ public class TabController {
     private void cancelCurrentOperation() {
         // Mark that we're cancelling to prevent concurrent operations
         isCancelling = true;
+        if (isAgentPlanPending && queryTab != null) {
+            queryTab.setPendingPlan(null);
+            isAgentPlanPending = false;
+            pendingAgentPlan = null;
+        }
 
         // Clean up streaming renderers FIRST to stop stale UI updates
         if (currentStreamingRenderer != null) {

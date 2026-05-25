@@ -279,6 +279,16 @@ public class ReActOrchestrator {
         String sessionId,
         ReActProgressHandler handler
     ) {
+        return analyze(query, initialContext, sessionId, handler, null);
+    }
+
+    public CompletableFuture<ReActResult> analyze(
+        String query,
+        String initialContext,
+        String sessionId,
+        ReActProgressHandler handler,
+        String approvedPlan
+    ) {
         CompletableFuture<ReActResult> resultFuture = new CompletableFuture<>();
         resultFuture.whenComplete((result, error) -> clearActiveAnalysis(resultFuture));
         Instant startTime = Instant.now();
@@ -295,6 +305,31 @@ public class ReActOrchestrator {
 
             if (cancelled.get() || !handler.shouldContinue()) {
                 completeWithCancellation(resultFuture, findings, startTime, handler);
+                return resultFuture;
+            }
+
+            if (approvedPlan != null && !approvedPlan.isBlank()) {
+                todoManager.initializeFromLLMResponse(approvedPlan);
+                handler.onTodosUpdated(
+                    todoManager.formatForPrompt(),
+                    todoManager.getAllTodos(),
+                    todoManager.toCompactString());
+                List<Map<String, Object>> tools = getToolsAsFunction();
+                AtomicInteger iteration = new AtomicInteger(0);
+                AtomicInteger toolCallCount = new AtomicInteger(0);
+                runReActIteration(
+                    query,
+                    initialContext,
+                    todoManager,
+                    findings,
+                    summarizer,
+                    tools,
+                    iteration,
+                    toolCallCount,
+                    handler,
+                    startTime,
+                    resultFuture
+                );
                 return resultFuture;
             }
 
