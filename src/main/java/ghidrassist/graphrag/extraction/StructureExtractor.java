@@ -73,6 +73,8 @@ public class StructureExtractor {
     private static final int DECOMPILE_MAX_RETRIES = 3;
     private static final int MAX_INFERRED_CALL_EDGES_PER_FUNCTION = 64;
     private static final Pattern HEX_ADDRESS_PATTERN = Pattern.compile("(?i)\\b0x[0-9a-f]{4,16}\\b");
+    private static final Pattern IDENTIFIER_PATTERN = Pattern.compile("\\b[A-Za-z_][A-Za-z0-9_:@$]*\\b");
+    private static final Map<String, int[]> CALLBACK_API_ARGUMENTS = createCallbackApiArgumentMap();
 
     // Incremental mode: when true, preserves existing semantic data (summaries, embeddings, flags)
     private boolean incrementalMode = false;
@@ -909,23 +911,251 @@ public class StructureExtractor {
 
         FunctionManager funcMgr = program.getFunctionManager();
         Set<Long> inferredTargets = new HashSet<>();
+        Map<String, Function> functionsByName = buildFunctionNameIndex(funcMgr);
 
         Matcher matcher = HEX_ADDRESS_PATTERN.matcher(content);
         while (matcher.find() && inferredTargets.size() < MAX_INFERRED_CALL_EDGES_PER_FUNCTION) {
             try {
-                long offset = Long.parseUnsignedLong(matcher.group().substring(2), 16);
-                Function target = funcMgr.getFunctionAt(program.getAddressFactory()
-                        .getDefaultAddressSpace().getAddress(offset));
-                if (target == null) {
-                    target = funcMgr.getFunctionContaining(program.getAddressFactory()
-                            .getDefaultAddressSpace().getAddress(offset));
-                }
+                Function target = resolveFunctionByAddress(funcMgr, matcher.group());
                 queueInferredCall(caller, callerNodeId, target, inferredTargets, "address_reference");
             } catch (Exception e) {
                 Msg.debug(this, "Failed to infer call from address token: " + e.getMessage());
             }
         }
 
+        inferCallbackApiCalls(caller, callerNodeId, content, funcMgr, functionsByName, inferredTargets);
+    }
+
+    private void inferCallbackApiCalls(Function caller, String callerNodeId, String content,
+                                       FunctionManager funcMgr, Map<String, Function> functionsByName,
+                                       Set<Long> inferredTargets) {
+        for (Map.Entry<String, int[]> entry : CALLBACK_API_ARGUMENTS.entrySet()) {
+            if (inferredTargets.size() >= MAX_INFERRED_CALL_EDGES_PER_FUNCTION || monitor.isCancelled()) {
+                return;
+            }
+
+            String apiName = entry.getKey();
+            Pattern callPattern = Pattern.compile("(?i)\\b" + Pattern.quote(apiName) + "\\s*\\(");
+            Matcher matcher = callPattern.matcher(content);
+            while (matcher.find() && inferredTargets.size() < MAX_INFERRED_CALL_EDGES_PER_FUNCTION) {
+                int openParen = content.indexOf('(', matcher.start());
+                int closeParen = findMatchingParen(content, openParen);
+                if (openParen < 0 || closeParen <= openParen) {
+                    continue;
+                }
+
+                List<String> args = splitArguments(content.substring(openParen + 1, closeParen));
+                for (int argIndex : entry.getValue()) {
+                    if (argIndex >= args.size()) {
+                        continue;
+                    }
+                    Function target = resolveCallbackArgument(funcMgr, functionsByName, args.get(argIndex));
+                    queueInferredCall(caller, callerNodeId, target, inferredTargets,
+                            "callback_argument:" + apiName);
+                }
+            }
+        }
+    }
+
+    private Map<String, Function> buildFunctionNameIndex(FunctionManager funcMgr) {
+        Map<String, Function> index = new HashMap<>();
+        FunctionIterator functions = funcMgr.getFunctions(true);
+        while (functions.hasNext() && !monitor.isCancelled()) {
+            Function function = functions.next();
+            if (function == null || function.isExternal() || function.isThunk()) {
+                continue;
+            }
+            addFunctionNameAlias(index, function.getName(), function);
+            addFunctionNameAlias(index, function.getName(true), function);
+        }
+        return index;
+    }
+
+    private void addFunctionNameAlias(Map<String, Function> index, String name, Function function) {
+        if (name == null || name.isBlank()) {
+            return;
+        }
+        index.putIfAbsent(name.toLowerCase(Locale.ROOT), function);
+    }
+
+    private Function resolveCallbackArgument(FunctionManager funcMgr, Map<String, Function> functionsByName,
+                                             String argument) {
+        if (argument == null || argument.isBlank()) {
+            return null;
+        }
+
+        Matcher addressMatcher = HEX_ADDRESS_PATTERN.matcher(argument);
+        while (addressMatcher.find()) {
+            Function target = resolveFunctionByAddress(funcMgr, addressMatcher.group());
+            if (target != null) {
+                return target;
+            }
+        }
+
+        Matcher identifierMatcher = IDENTIFIER_PATTERN.matcher(argument);
+        Function fallback = null;
+        while (identifierMatcher.find()) {
+            String token = normalizeCallbackIdentifier(identifierMatcher.group());
+            if (token.isBlank() || isCallbackNoiseToken(token)) {
+                continue;
+            }
+            Function target = functionsByName.get(token.toLowerCase(Locale.ROOT));
+            if (target != null) {
+                return target;
+            }
+            if (fallback == null) {
+                fallback = functionsByName.get(stripNamespace(token).toLowerCase(Locale.ROOT));
+            }
+        }
+        return fallback;
+    }
+
+    private Function resolveFunctionByAddress(FunctionManager funcMgr, String addressToken) {
+        try {
+            String value = addressToken.trim();
+            if (value.startsWith("0x") || value.startsWith("0X")) {
+                value = value.substring(2);
+            }
+            long offset = Long.parseUnsignedLong(value, 16);
+            Address address = program.getAddressFactory().getDefaultAddressSpace().getAddress(offset);
+            Function target = funcMgr.getFunctionAt(address);
+            return target != null ? target : funcMgr.getFunctionContaining(address);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private int findMatchingParen(String text, int openParen) {
+        if (openParen < 0 || openParen >= text.length() || text.charAt(openParen) != '(') {
+            return -1;
+        }
+        int depth = 0;
+        boolean inString = false;
+        char stringQuote = 0;
+        for (int i = openParen; i < text.length(); i++) {
+            char c = text.charAt(i);
+            if (inString) {
+                if (c == stringQuote && (i == 0 || text.charAt(i - 1) != '\\')) {
+                    inString = false;
+                }
+                continue;
+            }
+            if (c == '"' || c == '\'') {
+                inString = true;
+                stringQuote = c;
+                continue;
+            }
+            if (c == '(') {
+                depth++;
+            } else if (c == ')') {
+                depth--;
+                if (depth == 0) {
+                    return i;
+                }
+            }
+        }
+        return -1;
+    }
+
+    private List<String> splitArguments(String arguments) {
+        List<String> result = new ArrayList<>();
+        StringBuilder current = new StringBuilder();
+        int depth = 0;
+        boolean inString = false;
+        char stringQuote = 0;
+        for (int i = 0; i < arguments.length(); i++) {
+            char c = arguments.charAt(i);
+            if (inString) {
+                current.append(c);
+                if (c == stringQuote && (i == 0 || arguments.charAt(i - 1) != '\\')) {
+                    inString = false;
+                }
+                continue;
+            }
+            if (c == '"' || c == '\'') {
+                inString = true;
+                stringQuote = c;
+                current.append(c);
+                continue;
+            }
+            if (c == '(' || c == '[' || c == '{') {
+                depth++;
+            } else if (c == ')' || c == ']' || c == '}') {
+                depth = Math.max(0, depth - 1);
+            } else if (c == ',' && depth == 0) {
+                result.add(current.toString().trim());
+                current.setLength(0);
+                continue;
+            }
+            current.append(c);
+        }
+        if (!current.toString().trim().isEmpty()) {
+            result.add(current.toString().trim());
+        }
+        return result;
+    }
+
+    private String normalizeCallbackIdentifier(String token) {
+        String normalized = token.trim();
+        while (normalized.startsWith("&") || normalized.startsWith("*")) {
+            normalized = normalized.substring(1).trim();
+        }
+        return normalized;
+    }
+
+    private boolean isCallbackNoiseToken(String token) {
+        String lower = token.toLowerCase(Locale.ROOT);
+        return lower.equals("null")
+                || lower.equals("0")
+                || lower.equals("true")
+                || lower.equals("false")
+                || lower.equals("sizeof")
+                || lower.equals("lpthread_start_routine")
+                || lower.equals("pthread_start_routine")
+                || lower.equals("thread_proc")
+                || lower.equals("void")
+                || lower.equals("int")
+                || lower.equals("long")
+                || lower.equals("undefined")
+                || lower.equals("undefined4")
+                || lower.equals("undefined8");
+    }
+
+    private String stripNamespace(String token) {
+        int namespaceIdx = token.lastIndexOf("::");
+        if (namespaceIdx >= 0 && namespaceIdx + 2 < token.length()) {
+            return token.substring(namespaceIdx + 2);
+        }
+        int dotIdx = token.lastIndexOf('.');
+        return dotIdx >= 0 && dotIdx + 1 < token.length() ? token.substring(dotIdx + 1) : token;
+    }
+
+    private static Map<String, int[]> createCallbackApiArgumentMap() {
+        Map<String, int[]> map = new LinkedHashMap<>();
+        map.put("CreateThread", new int[] {2});
+        map.put("CreateRemoteThread", new int[] {3});
+        map.put("CreateRemoteThreadEx", new int[] {3});
+        map.put("_beginthread", new int[] {0});
+        map.put("_beginthreadex", new int[] {2});
+        map.put("beginthread", new int[] {0});
+        map.put("beginthreadex", new int[] {2});
+        map.put("pthread_create", new int[] {2});
+        map.put("QueueUserWorkItem", new int[] {0});
+        map.put("CreateTimerQueueTimer", new int[] {3});
+        map.put("RegisterWaitForSingleObject", new int[] {2});
+        map.put("SetTimer", new int[] {3});
+        map.put("EnumWindows", new int[] {0});
+        map.put("EnumChildWindows", new int[] {1});
+        map.put("EnumThreadWindows", new int[] {1});
+        map.put("EnumDesktopWindows", new int[] {1});
+        map.put("EnumResourceNamesA", new int[] {2});
+        map.put("EnumResourceNamesW", new int[] {2});
+        map.put("signal", new int[] {1});
+        map.put("sigaction", new int[] {1});
+        map.put("atexit", new int[] {0});
+        map.put("qsort", new int[] {3});
+        map.put("bsearch", new int[] {4});
+        return Collections.unmodifiableMap(map);
     }
 
     private void queueInferredCall(Function caller, String callerNodeId, Function target,
