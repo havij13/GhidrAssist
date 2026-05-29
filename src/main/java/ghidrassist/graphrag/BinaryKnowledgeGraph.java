@@ -1207,7 +1207,7 @@ public class BinaryKnowledgeGraph {
 
         List<String> callerIds = new ArrayList<>();
         for (LabeledEdge edge : inEdges) {
-            if (edge.getType() == EdgeType.CALLS) {
+            if (edge.getType() == EdgeType.CALLS || edge.getType() == EdgeType.INFERRED_CALLS) {
                 callerIds.add(memoryGraph.getEdgeSource(edge));
             }
         }
@@ -1235,7 +1235,7 @@ public class BinaryKnowledgeGraph {
 
         List<String> calleeIds = new ArrayList<>();
         for (LabeledEdge edge : outEdges) {
-            if (edge.getType() == EdgeType.CALLS) {
+            if (edge.getType() == EdgeType.CALLS || edge.getType() == EdgeType.INFERRED_CALLS) {
                 calleeIds.add(memoryGraph.getEdgeTarget(edge));
             }
         }
@@ -1374,7 +1374,14 @@ public class BinaryKnowledgeGraph {
      * Results are ordered by address for predictable processing order.
      */
     public List<KnowledgeNode> getStaleNodes(int limit) {
+        return getStaleNodes(limit, SemanticAnalysisOptions.defaults());
+    }
+
+    public List<KnowledgeNode> getStaleNodes(int limit, SemanticAnalysisOptions options) {
         List<KnowledgeNode> nodes = new ArrayList<>();
+        SemanticAnalysisOptions effectiveOptions = options != null ? options : SemanticAnalysisOptions.defaults();
+        int effectiveLimit = limit > 0 ? limit : Integer.MAX_VALUE;
+        int queryLimit = effectiveOptions.isDefaultScope() ? effectiveLimit : Integer.MAX_VALUE;
         // Include nodes that are stale OR have no summary (null, empty, or whitespace-only)
         // Order by address for predictable sequential processing
         String sql = "SELECT * FROM graph_nodes WHERE binary_id = ? " +
@@ -1383,10 +1390,16 @@ public class BinaryKnowledgeGraph {
 
         try (PreparedStatement stmt = connection.prepareStatement(sql)) {
             stmt.setString(1, binaryId);
-            stmt.setInt(2, limit);
+            stmt.setInt(2, queryLimit);
             ResultSet rs = stmt.executeQuery();
             while (rs.next()) {
-                nodes.add(resultSetToNode(rs));
+                KnowledgeNode node = resultSetToNode(rs);
+                if (effectiveOptions.matches(node)) {
+                    nodes.add(node);
+                    if (nodes.size() >= effectiveLimit) {
+                        break;
+                    }
+                }
             }
         } catch (SQLException e) {
             Msg.error(this, "Failed to get stale nodes: " + e.getMessage(), e);

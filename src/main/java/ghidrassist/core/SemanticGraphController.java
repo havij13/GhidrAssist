@@ -10,6 +10,7 @@ import ghidra.util.task.TaskMonitor;
 import ghidrassist.AnalysisDB;
 import ghidrassist.GhidrAssistPlugin;
 import ghidrassist.graphrag.BinaryKnowledgeGraph;
+import ghidrassist.graphrag.SemanticAnalysisOptions;
 import ghidrassist.graphrag.nodes.EdgeType;
 import ghidrassist.graphrag.nodes.KnowledgeNode;
 import ghidrassist.ui.tabs.SemanticGraphTab;
@@ -318,6 +319,10 @@ public class SemanticGraphController {
      * Uses SwingWorker for non-blocking operation.
      */
     public void handleSemanticAnalysis() {
+        handleSemanticAnalysis(SemanticAnalysisOptions.defaults());
+    }
+
+    public void handleSemanticAnalysis(SemanticAnalysisOptions options) {
         if (plugin.getCurrentProgram() == null) {
             Msg.showWarn(this, null, "No Program", "No program loaded");
             return;
@@ -330,7 +335,7 @@ public class SemanticGraphController {
         }
 
         // Create and configure the worker
-        semanticAnalysisWorker = new SemanticAnalysisWorker(analysisDB, plugin.getCurrentProgram());
+        semanticAnalysisWorker = new SemanticAnalysisWorker(analysisDB, plugin.getCurrentProgram(), options);
 
         semanticAnalysisWorker.setProgressCallback(progress -> {
             semanticGraphTab.showProgress(progress.getPercentage(), progress.message);

@@ -2650,6 +2650,10 @@ public class TabController {
         semanticGraphController.handleSemanticAnalysis();
     }
 
+    public void handleSemanticGraphSemanticAnalysis(ghidrassist.graphrag.SemanticAnalysisOptions options) {
+        semanticGraphController.handleSemanticAnalysis(options);
+    }
+
     /**
      * Handle security analysis button - taint analysis + VULNERABLE_VIA edges.
      * Delegates to SemanticGraphController.

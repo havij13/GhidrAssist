@@ -1076,6 +1076,11 @@ public class GraphViewPanel extends JPanel {
             case CALLS:
                 ep.color = EDGE_CALLS;
                 break;
+            case INFERRED_CALLS:
+                ep.color = EDGE_CALLS;
+                ep.dashed = true;
+                ep.strokeWidth = 1.0f;
+                break;
             case REFERENCES:
                 ep.color = EDGE_REFS;
                 ep.dashed = true;
@@ -1149,6 +1154,7 @@ public class GraphViewPanel extends JPanel {
         Set<EdgeType> types = new HashSet<>();
         if (showCallsCheckbox.isSelected()) {
             types.add(EdgeType.CALLS);
+            types.add(EdgeType.INFERRED_CALLS);
             types.add(EdgeType.REFERENCES);
         }
         if (showVulnCheckbox.isSelected()) {

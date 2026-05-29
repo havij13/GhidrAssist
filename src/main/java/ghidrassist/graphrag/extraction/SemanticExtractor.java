@@ -6,6 +6,7 @@ import ghidrassist.apiprovider.APIProvider;
 import ghidrassist.apiprovider.ChatMessage;
 import ghidrassist.apiprovider.exceptions.APIProviderException;
 import ghidrassist.graphrag.BinaryKnowledgeGraph;
+import ghidrassist.graphrag.SemanticAnalysisOptions;
 import ghidrassist.graphrag.nodes.KnowledgeNode;
 import ghidrassist.graphrag.nodes.NodeType;
 import ghidrassist.LlmApi;
@@ -98,6 +99,11 @@ public class SemanticExtractor {
      * @return ExtractionResult with statistics
      */
     public ExtractionResult summarizeStaleNodes(int limit, ProgressCallback progressCallback) {
+        return summarizeStaleNodes(limit, progressCallback, SemanticAnalysisOptions.defaults());
+    }
+
+    public ExtractionResult summarizeStaleNodes(int limit, ProgressCallback progressCallback,
+                                                SemanticAnalysisOptions options) {
         long startTime = System.currentTimeMillis();
         cancelled = false;
         summarized.set(0);
@@ -106,7 +112,11 @@ public class SemanticExtractor {
         processed.set(0);
 
         // Get stale nodes
-        List<KnowledgeNode> staleNodes = graph.getStaleNodes(limit > 0 ? limit : Integer.MAX_VALUE);
+        SemanticAnalysisOptions effectiveOptions = options != null ? options : SemanticAnalysisOptions.defaults();
+        int effectiveLimit = limit > 0 ? limit : effectiveOptions.getMaxNodes();
+        List<KnowledgeNode> staleNodes = graph.getStaleNodes(
+                effectiveLimit > 0 ? effectiveLimit : Integer.MAX_VALUE,
+                effectiveOptions);
         int total = staleNodes.size();
 
         if (total == 0) {

@@ -434,6 +434,13 @@ public class GraphRAGService {
     public SemanticExtractor.ExtractionResult summarizeStaleNodes(Program program,
                                                                     int limit,
                                                                     SemanticExtractor.ProgressCallback callback) {
+        return summarizeStaleNodes(program, limit, callback, SemanticAnalysisOptions.defaults());
+    }
+
+    public SemanticExtractor.ExtractionResult summarizeStaleNodes(Program program,
+                                                                    int limit,
+                                                                    SemanticExtractor.ProgressCallback callback,
+                                                                    SemanticAnalysisOptions options) {
         if (llmProvider == null) {
             Msg.warn(this, "No LLM provider configured for semantic extraction");
             return new SemanticExtractor.ExtractionResult(0, 0, 0, 0);
@@ -444,7 +451,7 @@ public class GraphRAGService {
 
         currentExtractor = new SemanticExtractor(llmProvider, graph);
         try {
-            return currentExtractor.summarizeStaleNodes(limit, callback);
+            return currentExtractor.summarizeStaleNodes(limit, callback, options);
         } finally {
             currentExtractor = null;  // Clear when done
         }

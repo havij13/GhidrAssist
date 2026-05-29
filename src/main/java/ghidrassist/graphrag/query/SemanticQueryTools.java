@@ -834,6 +834,9 @@ public class SemanticQueryTools {
         if (currentName != null && !currentName.equals(storedName)) {
             Msg.info(this, "Updating stale function name: " + storedName + " -> " + currentName);
             node.setName(currentName);
+            if (!node.isUserEdited()) {
+                node.markStale();
+            }
             graph.upsertNode(node);  // FTS index auto-updates via trigger
             return true;
         }
@@ -1568,6 +1571,14 @@ public class SemanticQueryTools {
 
             String oldName = node.getName();
             boolean wasUpdated = ensureNodeNameFresh(function, node);
+            if (wasUpdated) {
+                try {
+                    analysisDB.rebuildFts();
+                    analysisDB.invalidateKnowledgeGraphCache(currentProgram.getExecutableSHA256());
+                } catch (Exception e) {
+                    Msg.warn(this, "Name refresh completed but cache/index refresh failed: " + e.getMessage());
+                }
+            }
 
             return MCPToolResult.success(buildNameRefreshOutput(
                 function.getName(), address, oldName, wasUpdated));
@@ -1575,6 +1586,14 @@ public class SemanticQueryTools {
 
         // Batch refresh all functions in binary
         int updated = refreshAllNames();
+        try {
+            analysisDB.rebuildFts();
+            if (currentProgram != null) {
+                analysisDB.invalidateKnowledgeGraphCache(currentProgram.getExecutableSHA256());
+            }
+        } catch (Exception e) {
+            Msg.warn(this, "Name refresh completed but cache/index refresh failed: " + e.getMessage());
+        }
         return MCPToolResult.success(buildBatchNameRefreshOutput(updated));
     }
 

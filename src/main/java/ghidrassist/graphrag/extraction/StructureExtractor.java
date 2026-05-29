@@ -29,6 +29,8 @@ import ghidrassist.graphrag.nodes.NodeType;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * Extracts structural information from Ghidra binaries and populates the knowledge graph.
@@ -69,6 +71,8 @@ public class StructureExtractor {
     // Decompilation retry settings
     private static final int DECOMPILE_BASE_TIMEOUT = 30;  // seconds
     private static final int DECOMPILE_MAX_RETRIES = 3;
+    private static final int MAX_INFERRED_CALL_EDGES_PER_FUNCTION = 64;
+    private static final Pattern HEX_ADDRESS_PATTERN = Pattern.compile("(?i)\\b0x[0-9a-f]{4,16}\\b");
 
     // Incremental mode: when true, preserves existing semantic data (summaries, embeddings, flags)
     private boolean incrementalMode = false;
@@ -206,6 +210,7 @@ public class StructureExtractor {
 
                 // Extract outgoing calls from this function (what it calls)
                 extractFunctionCalls(function, node.getId());
+                inferFunctionCalls(function, node.getId(), node.getRawContent());
 
                 // Extract incoming calls to this function (what calls it)
                 // This ensures callers list is populated for single-function extraction
@@ -247,10 +252,16 @@ public class StructureExtractor {
             // We use a simple heuristic: if there are no REFERENCES edges from this node, update
             boolean hasReferencesEdges = graph.hasEdgesOfType(node.getId(), EdgeType.REFERENCES);
             boolean hasVulnerableEdges = graph.hasEdgesOfType(node.getId(), EdgeType.CALLS_VULNERABLE);
+            boolean hasInferredCalls = graph.hasEdgesOfType(node.getId(), EdgeType.INFERRED_CALLS);
 
             if (!hasReferencesEdges) {
                 Msg.debug(this, "Updating REFERENCES edges for: " + function.getName());
                 extractFunctionReferences(function, node);
+            }
+
+            if (!hasInferredCalls) {
+                Msg.debug(this, "Updating INFERRED_CALLS edges for: " + function.getName());
+                inferFunctionCalls(function, node.getId(), node.getRawContent());
             }
 
             if (!hasVulnerableEdges) {
@@ -479,6 +490,7 @@ public class StructureExtractor {
 
                 // Extract calls from this function (use canonical node ID)
                 extractFunctionCalls(function, node.getId());
+                inferFunctionCalls(function, node.getId(), node.getRawContent());
 
                 // Extract references from this function (REFERENCES edges)
                 extractFunctionReferences(function, node);
@@ -561,6 +573,7 @@ public class StructureExtractor {
             KnowledgeNode existingNode = graph.getNodeByAddress(address);
             KnowledgeNode node;
             boolean isExistingNode = (existingNode != null);
+            String oldName = existingNode != null ? existingNode.getName() : null;
 
             if (existingNode == null) {
                 node = KnowledgeNode.createFunction(binaryId, address, name);
@@ -587,7 +600,7 @@ public class StructureExtractor {
 
             // In incremental mode, check if content actually changed before marking stale
             if (incrementalMode && isExistingNode) {
-                boolean contentChanged = shouldMarkStale(existingNode, name, content);
+                boolean contentChanged = shouldMarkStale(existingNode, oldName, name, content);
                 applyFunctionCodeFields(node, signature, decompiledCode, disassembly, content);
                 if (contentChanged) {
                     node.markStale();
@@ -632,6 +645,10 @@ public class StructureExtractor {
      * @return true if the node should be marked stale for re-summarization
      */
     private boolean shouldMarkStale(KnowledgeNode existing, String newName, String newContent) {
+        return shouldMarkStale(existing, existing != null ? existing.getName() : null, newName, newContent);
+    }
+
+    private boolean shouldMarkStale(KnowledgeNode existing, String oldName, String newName, String newContent) {
         if (existing == null) {
             return true; // New node, needs summarization
         }
@@ -642,7 +659,7 @@ public class StructureExtractor {
         }
 
         // Name changed
-        if (!java.util.Objects.equals(existing.getName(), newName)) {
+        if (!java.util.Objects.equals(oldName, newName)) {
             return true;
         }
 
@@ -694,6 +711,7 @@ public class StructureExtractor {
             KnowledgeNode existingNode = graph.getNodeByAddress(address);
             KnowledgeNode node;
             boolean isExistingNode = (existingNode != null);
+            String oldName = existingNode != null ? existingNode.getName() : null;
 
             if (existingNode == null) {
                 node = KnowledgeNode.createFunction(binaryId, address, name);
@@ -713,7 +731,7 @@ public class StructureExtractor {
 
             // In incremental mode, check if content actually changed before marking stale
             if (incrementalMode && isExistingNode) {
-                boolean contentChanged = shouldMarkStale(existingNode, name, content);
+                boolean contentChanged = shouldMarkStale(existingNode, oldName, name, content);
                 applyFunctionCodeFields(node, signature, decompiledCode, disassembly, content);
                 if (contentChanged) {
                     node.markStale();
@@ -882,6 +900,59 @@ public class StructureExtractor {
         if (debugThis) {
             Msg.info(this, String.format("[%s] Total call targets processed: %d", caller.getName(), processedTargets.size()));
         }
+    }
+
+    private void inferFunctionCalls(Function caller, String callerNodeId, String content) {
+        if (caller == null || callerNodeId == null || content == null || content.isBlank()) {
+            return;
+        }
+
+        FunctionManager funcMgr = program.getFunctionManager();
+        Set<Long> inferredTargets = new HashSet<>();
+
+        Matcher matcher = HEX_ADDRESS_PATTERN.matcher(content);
+        while (matcher.find() && inferredTargets.size() < MAX_INFERRED_CALL_EDGES_PER_FUNCTION) {
+            try {
+                long offset = Long.parseUnsignedLong(matcher.group().substring(2), 16);
+                Function target = funcMgr.getFunctionAt(program.getAddressFactory()
+                        .getDefaultAddressSpace().getAddress(offset));
+                if (target == null) {
+                    target = funcMgr.getFunctionContaining(program.getAddressFactory()
+                            .getDefaultAddressSpace().getAddress(offset));
+                }
+                queueInferredCall(caller, callerNodeId, target, inferredTargets, "address_reference");
+            } catch (Exception e) {
+                Msg.debug(this, "Failed to infer call from address token: " + e.getMessage());
+            }
+        }
+
+    }
+
+    private void queueInferredCall(Function caller, String callerNodeId, Function target,
+                                   Set<Long> inferredTargets, String reason) {
+        if (target == null || target.equals(caller) || target.isExternal() || target.isThunk()) {
+            return;
+        }
+
+        long targetOffset = target.getEntryPoint().getOffset();
+        if (!inferredTargets.add(targetOffset)) {
+            return;
+        }
+
+        KnowledgeNode targetNode = graph.getNodeByAddress(targetOffset);
+        if (targetNode == null) {
+            targetNode = KnowledgeNode.createFunction(binaryId, targetOffset, target.getName());
+            targetNode.markStale();
+            targetNode = graph.queueNodeForBatch(targetNode);
+        }
+
+        if (graph.hasEdgeBetween(callerNodeId, targetNode.getId(), EdgeType.CALLS)
+                || graph.hasEdgeBetween(callerNodeId, targetNode.getId(), EdgeType.INFERRED_CALLS)) {
+            return;
+        }
+
+        String metadata = "{\"source\":\"" + reason + "\",\"confidence\":\"heuristic\"}";
+        graph.queueEdgeForBatch(callerNodeId, targetNode.getId(), EdgeType.INFERRED_CALLS, 0.55, metadata);
     }
 
     /**
